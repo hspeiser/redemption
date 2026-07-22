@@ -1,0 +1,35 @@
+# ============================================================================
+# Gate geometry  (per size_details.md sec 3.7 "Gate dimension")
+#
+# The gate is a SQUARE tube frame:
+#   - Outer boundary:  2700 x 2700 mm
+#   - Inner opening:   1500 x 1500 mm   <-- the 4 corners we detect (keypoints)
+#   - Depth (tube):     260 mm
+#
+# Frame bar width per side = (2700 - 1500) / 2 = 600 mm.
+#
+# Object frame (meters), gate lying on its own plane Z_obj = 0, centered at
+# origin. Convention matches the OpenCV camera frame used elsewhere:
+# +X right, +Y down, +Z is the gate's forward normal.
+#
+# The 4 INNER corners are the keypoints AND the PnP object points, in a fixed
+# semantic order (index is tied to the physical corner, independent of view):
+#   0 = TL (top-left)      (-0.75, -0.75, 0)
+#   1 = TR (top-right)     (+0.75, -0.75, 0)
+#   2 = BR (bottom-right)  (+0.75, +0.75, 0)
+#   3 = BL (bottom-left)   (-0.75, +0.75, 0)
+# ============================================================================
+
+[dimensions_mm]
+outer_width = 2700.0
+outer_height = 2700.0
+inner_width = 1500.0
+inner_height = 1500.0
+depth = 260.0
+
+[appearance]
+# Bright-orange frame colour in BGR (OpenCV order). ~ "safety orange".
+# Photometric jitter around this is configured in datagen.toml.
+color_bgr = [0, 90, 255]
+# Darker shade for the extruded side faces (depth cue), fraction of frame colour.
+side_face_darkness = 0.45

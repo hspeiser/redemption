@@ -1,0 +1,31 @@
+# ============================================================================
+# Camera intrinsics  --  SINGLE SOURCE OF TRUTH for all projection / PnP math.
+#
+# Standard pinhole model, NO lens distortion (per size_details.md sec. "Camera
+# intrinsics"). Convention: OpenCV camera frame -- +X right, +Y down, +Z into
+# the scene (a point is in front of the camera when Z > 0).
+#
+#   u = fx * X / Z + cx
+#   v = fy * Y / Z + cy
+#
+# NOTE ON THE SPEC: size_details.md lists "VFoV = 90 deg", but the intrinsics
+# (fy = 320, cy = 180) actually give a *vertical* FoV of
+#     2 * atan(180 / 320) = 58.7 deg
+# and a *horizontal* FoV of
+#     2 * atan(320 / 320) = 90.0 deg.
+# The "90 deg" in the spec is really the HORIZONTAL field of view. We trust the
+# intrinsics matrix K below, which is what projection and PnP consume.
+# ============================================================================
+
+[resolution]
+width = 640    # px
+height = 360   # px
+
+[intrinsics]
+fx = 320.0     # focal length x (px)
+fy = 320.0     # focal length y (px)
+cx = 320.0     # principal point x (px)
+cy = 180.0     # principal point y (px)
+
+# No distortion: [k1, k2, p1, p2, k3]
+dist_coeffs = [0.0, 0.0, 0.0, 0.0, 0.0]

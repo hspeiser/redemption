@@ -1,0 +1,42 @@
+# ============================================================================
+# Report generation config. Reports are auto-generated after every data-gen
+# and training/PnP run, as timestamped Markdown with embedded PNG plots.
+# ============================================================================
+
+[output]
+root = "reports"
+format = "markdown"               # "markdown" (default) | "html"
+embed_images = true               # inline images (base64 for html; relative for md)
+
+[plots]
+dpi = 130
+style = "seaborn-v0_8-darkgrid"   # matplotlib style
+distribution = true               # 3D scatter + histograms/KDE + coverage heatmap
+training_curves = true            # losses + pose mAP vs epoch
+corner_progress = true            # corner RMSE (px) vs checkpoint + overlay montage
+pnp_reconstruction = true         # pose error vs checkpoint + confidence-vs-error scatter
+
+# ---------------------------------------------------------------------------
+# Success thresholds -> drive the green / yellow / red indicators in reports.
+# ---------------------------------------------------------------------------
+[thresholds.dataset]
+# Fraction of images with >= 1 labelled gate; and per-axis uniformity p-value.
+min_labelled_fraction = 0.80
+min_uniformity_pvalue = 0.05      # KS test vs uniform; below => flagged as skewed
+
+[thresholds.detection]
+# On the val/test set, from Ultralytics metrics.
+pose_map50_green = 0.85
+pose_map50_yellow = 0.65
+
+[thresholds.corners]
+# Mean corner localisation RMSE in pixels (lower is better).
+rmse_px_green = 3.0
+rmse_px_yellow = 8.0
+
+[thresholds.pnp]
+# Mean pose error (lower is better).
+translation_m_green = 0.10
+translation_m_yellow = 0.30
+rotation_deg_green = 3.0
+rotation_deg_yellow = 10.0

@@ -1,0 +1,42 @@
+# ============================================================================
+# PnP pose-recovery + evaluation config (the non-trained final target).
+#
+# For each detected gate we take the 4 predicted inner corners (+ per-keypoint
+# confidence) and solve for the gate's 6-DoF pose, then compare against the
+# ground-truth pose stored in the dataset sidecars.
+#
+# The headline plot is RECONSTRUCTION ERROR vs TRAINING CHECKPOINT: for every
+# saved checkpoint we run inference over the test set, solve PnP, and average
+# the pose error -- showing how better corner detection yields better poses.
+# ============================================================================
+
+[data]
+dataset_name = "gates_v1"
+dataset_root = "datasets"
+split = "test"                    # which split to evaluate PnP on
+
+[model]
+# Which training run to pull checkpoints from. Empty => latest run under runs/.
+run_dir = ""
+
+[solver]
+# "IPPE" (general coplanar, matches our object-point frame directly) |
+# "IPPE_SQUARE" (square-specialized) | "ITERATIVE"
+method = "IPPE"
+refine_lm = true                  # Levenberg-Marquardt refinement after the initial solve
+
+[confidence]
+# Per-keypoint confidence handling.
+min_keypoint_conf = 0.25          # drop corners below this before solving
+min_corners = 4                   # PnP needs >= this many kept corners (4 for a full solve)
+weight_by_confidence = true       # weight the LM refinement residuals by confidence
+min_detection_conf = 0.25         # drop whole detections below this box confidence
+
+[matching]
+# Match a predicted gate to a ground-truth gate for error computation.
+max_center_dist_px = 60.0         # predicted vs gt inner-center distance gate
+
+[eval]
+# Which checkpoints to evaluate for the error-vs-checkpoint curve.
+# "all" = every *.pt under the run's weights/ dir; or list epochs like [10, 20, 50].
+checkpoints = "all"

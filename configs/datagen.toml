@@ -1,0 +1,93 @@
+# ============================================================================
+# Synthetic data generation config.
+#
+# Pipeline: sample random gate poses -> render procedurally with OpenCV ->
+# keep only FULLY-VISIBLE gates as labelled instances -> write YOLO-Pose
+# dataset (+ ground-truth pose sidecars for PnP eval and distribution plots).
+#
+# "Data quality is king": every knob that shapes the DISTRIBUTION lives here.
+# ============================================================================
+
+[dataset]
+name = "gates_v1"                 # dataset folder under output_root
+output_root = "datasets"
+# Number of RENDERED IMAGES per split (not instances). Some images may end up
+# with zero labelled gates (hard negatives) -- that is intentional and useful.
+n_train = 8000
+n_val = 1000
+n_test = 1000
+seed = 1234                       # master seed; per-image seeds derived from it
+
+[runtime]
+workers = 0                       # 0 = auto (os.cpu_count() - 1). Rendering is CPU-bound.
+overwrite = true                  # wipe an existing dataset of the same name first
+
+[scene]
+# Number of gate PLACEMENT ATTEMPTS per image, uniform integer in [min, max].
+# After visibility filtering the number of kept gates is usually <= this.
+min_gates = 1
+max_gates = 4
+allow_empty_images = true         # keep images that end up with 0 visible gates
+
+[pose]
+# Depth (distance from camera along +Z) sampling range, meters.
+depth_min = 0.3                   # sub-meter close-ups (mostly filtered out, => hard negatives)
+depth_max = 15.0
+depth_sampling = "uniform"        # "uniform" | "log_uniform" (log balances apparent size)
+
+# Gate CENTER is placed by choosing a target image pixel then back-projecting to
+# `depth`, guaranteeing good, controllable image-plane coverage. The pixel is
+# sampled uniformly in an expanded frame with this margin (fraction of w/h).
+# margin > 0 lets gate centers fall slightly outside the frame.
+center_pixel_margin = 0.15
+
+# Orientation, degrees. Roll is fixed at 0 per spec (pitch + yaw only).
+pitch_min = -50.0
+pitch_max = 50.0
+yaw_min = -50.0
+yaw_max = 50.0
+
+[visibility]
+# A gate becomes a labelled instance ONLY if all 4 inner corners are in front of
+# the camera, inside the image, AND not occluded by a nearer gate.
+require_all_corners_in_frame = true
+require_unoccluded = true
+# Minimum apparent inner-square area (px^2) to keep a gate (rejects tiny specks).
+min_area_px = 64.0
+
+[render]
+supersample = 2                   # render at NxN then downscale for anti-aliasing
+draw_side_faces = true            # extrude the 260 mm tube depth for a 3D cue
+[render.shading]
+enabled = true
+ambient = 0.55                    # base lighting fraction [0..1]
+# Directional light direction is randomized per image within this cone.
+
+# --- Procedural background (no external assets) ---------------------------
+[background]
+base_gray_min = 0                 # dark base intensity range (0..255)
+base_gray_max = 55
+gradient = true                   # random linear brightness gradient
+perlin_noise = true               # low-freq structured noise
+perlin_scale_min = 0.02
+perlin_scale_max = 0.12
+perlin_strength = 40              # additive amplitude (0..255)
+
+[background.clutter]
+enabled = true                    # random distractor shapes for robustness
+count_min = 0
+count_max = 8
+allow_orange = false              # if true, some clutter is orange (hard negatives)
+
+# --- Photometric domain randomization (applied to the final composite) ----
+[augment]
+enabled = true
+brightness = 0.20                 # +/- fraction
+contrast = 0.20                   # +/- fraction
+gate_hue_jitter = 8               # +/- degrees on the orange hue
+gate_sat_jitter = 0.15            # +/- fraction on saturation
+gaussian_noise_std = 6.0          # sensor noise std (0..255 scale)
+blur_prob = 0.35                  # chance of a mild gaussian blur
+motion_blur_prob = 0.20           # chance of directional motion blur
+vignette_prob = 0.5
+vignette_strength = 0.35

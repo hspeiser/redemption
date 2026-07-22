@@ -1,0 +1,67 @@
+# ============================================================================
+# YOLO-Pose training config (Ultralytics).
+#
+# Single class "gate", 4 keypoints (the inner corners). All values here are
+# passed straight into `YOLO(model).train(**overrides)`; see train.py.
+#
+# Staged workflow (per plan): start NANO as a proof-of-concept, then bump
+# `model` to yolo11s-pose / yolo11m-pose and re-run. Tuned conservatively for
+# a 6 GB GPU (RTX 3050).
+# ============================================================================
+
+[data]
+dataset_name = "gates_v1"         # must match datagen.toml [dataset].name
+dataset_root = "datasets"
+
+[model]
+# yolo11n-pose | yolo11s-pose | yolo11m-pose  (Ultralytics auto-downloads weights)
+weights = "yolo11n-pose.pt"
+
+[train]
+epochs = 100
+batch = 16                        # lower to 8 if you hit CUDA OOM on 6 GB
+imgsz = 640                       # letterboxed; source images are 640x360
+device = 0                        # CUDA device index; "cpu" to force CPU
+workers = 4                       # dataloader workers (kept modest for ~8GB free RAM)
+amp = true                        # automatic mixed precision (saves VRAM)
+patience = 30                     # early-stopping patience (epochs)
+seed = 0
+cos_lr = true
+project = "runs"                  # Ultralytics run dir root
+name = "gates_pose"               # run subfolder (auto-incremented)
+exist_ok = false
+
+[checkpoints]
+save = true
+# Save a checkpoint every N epochs (in addition to best.pt / last.pt) so PnP
+# eval can plot reconstruction error across training. -1 disables periodic saves.
+save_period = 10
+
+[augment]
+# Ultralytics on-the-fly augmentation. We already bake heavy domain
+# randomization into the dataset, so keep geometric aug modest to avoid
+# corrupting the tight keypoint geometry. fliplr uses flip_idx from data.yaml.
+hsv_h = 0.015
+hsv_s = 0.5
+hsv_v = 0.4
+degrees = 0.0                     # keep 0: roll augmentation would break pitch/yaw-only assumption
+translate = 0.1
+scale = 0.4
+fliplr = 0.5
+mosaic = 0.5
+mixup = 0.0
+
+[progress]
+# For the custom "corner detection improvement" plots in the training report:
+# run inference on this many fixed test images at each saved checkpoint.
+eval_subset = 200
+overlay_samples = 12              # number of predicted-vs-gt overlay tiles to save
+
+[live]
+# Live in-process progress: after each epoch, INSIDE the same training process
+# (no extra process), run a fast subset PnP eval of the just-saved checkpoint and
+# refresh runs/.../report_plots/progress_dashboard.png (losses, metrics, corner
+# RMSE, and PnP reconstruction error -- all vs epoch) + pnp_progress.json.
+enabled = true
+subset_images = 60                # test images to PnP-eval per epoch (small = fast)
+device = 0                        # inference device for the in-process eval (GPU is fine)
