@@ -98,6 +98,9 @@ def build_overrides(cfg: DotDict, data_yaml: Path, prof: dict) -> dict:
         "save": bool(ck.save),
         "save_period": int(ck.save_period),
         "plots": True,
+        # dataset caching: "ram" loads images into RAM once (great when the dataset
+        # lives on slow/NFS storage but there is plenty of RAM). False = read per batch.
+        "cache": t.get("cache", False),
         # augmentation
         "hsv_h": float(aug.hsv_h), "hsv_s": float(aug.hsv_s), "hsv_v": float(aug.hsv_v),
         "degrees": float(aug.degrees), "translate": float(aug.translate),

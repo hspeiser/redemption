@@ -9,18 +9,19 @@
 # ============================================================================
 
 [dataset]
-name = "gates_v1"                 # dataset folder under output_root
-output_root = "datasets"
+name = "gates_xl"                 # dataset folder under output_root
+output_root = "/home/ubuntu/binglebob/datasets"   # persistent NFS drive (generate ONCE)
 # Number of RENDERED IMAGES per split (not instances). Some images may end up
 # with zero labelled gates (hard negatives) -- that is intentional and useful.
-n_train = 8000
-n_val = 1000
-n_test = 1000
+# Sized for an xpose-scale model; nano/medium train on the same set.
+n_train = 50000
+n_val = 5000
+n_test = 5000
 seed = 1234                       # master seed; per-image seeds derived from it
 
 [runtime]
-workers = 0                       # 0 = auto (os.cpu_count() - 1). Rendering is CPU-bound.
-overwrite = true                  # wipe an existing dataset of the same name first
+workers = 28                      # Lambda box has 30 vCPUs; rendering is CPU-bound
+overwrite = false                 # do NOT wipe; we generate this dataset once and reuse it
 
 [scene]
 # Number of gate PLACEMENT ATTEMPTS per image, uniform integer in [min, max].

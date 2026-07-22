@@ -11,8 +11,8 @@
 # ============================================================================
 
 [data]
-dataset_name = "gates_v1"
-dataset_root = "datasets"
+dataset_name = "gates_xl"
+dataset_root = "/home/ubuntu/binglebob/datasets"
 split = "test"                    # which split to evaluate PnP on
 
 [model]
