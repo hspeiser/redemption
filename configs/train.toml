@@ -13,8 +13,15 @@ dataset_name = "gates_xl"                  # must match datagen.toml [dataset].n
 dataset_root = "/home/ubuntu/binglebob/datasets"
 
 [model]
-# One-line model switch. nano first (sanity/see-it-play-out), then medium, then xpose.
-active = "nano"                            # nano | medium | xpose
+# One-line model switch: nano | medium | xpose | finetune
+active = "finetune"
+
+[model.finetune]
+# Fine-tune our synthetic-pretrained nano on Henry's REAL auto-labeled data.
+# Keeps the strong detector (92.6% real detection) and sharpens corners on real imagery.
+weights = "/home/ubuntu/binglebob/checkpoints/gate_nano_best.pt"
+batch = 64
+name = "gates_real_ft"
 
 [model.nano]
 weights = "yolo11n-pose.pt"
@@ -32,9 +39,12 @@ batch = 16                                 # big model; lower to 12 if it OOMs
 name = "gates_xpose"
 
 [train]
-epochs = 100
+epochs = 40                                # fine-tune: fewer epochs from a strong init
 batch = 16                                 # fallback for legacy schema (unused when [model].active set)
 gpu_mem_fraction = 0                       # dedicated box -> no cap
+lr0 = 0.003                                # fine-tune LR (not from-scratch); Henry's v3 recipe
+pose = 14.0                                # weight pose/keypoint loss up (corner precision is the goal)
+kobj = 1.5
 cache = "ram"                              # load dataset into RAM once (dataset is on NFS; 200 GB RAM)
 imgsz = 640
 device = 0
@@ -59,7 +69,7 @@ degrees = 0.0
 translate = 0.1
 scale = 0.4
 fliplr = 0.5
-mosaic = 0.5
+mosaic = 0.4                               # less mosaic: keep big/close gates big (Henry's note)
 mixup = 0.0
 
 [progress]

@@ -101,6 +101,10 @@ def build_overrides(cfg: DotDict, data_yaml: Path, prof: dict) -> dict:
         # dataset caching: "ram" loads images into RAM once (great when the dataset
         # lives on slow/NFS storage but there is plenty of RAM). False = read per batch.
         "cache": t.get("cache", False),
+        # fine-tune / loss-weight knobs (optional; fall back to Ultralytics defaults).
+        "lr0": float(t.get("lr0", 0.01)),
+        "pose": float(t.get("pose", 12.0)),
+        "kobj": float(t.get("kobj", 1.0)),
         # augmentation
         "hsv_h": float(aug.hsv_h), "hsv_s": float(aug.hsv_s), "hsv_v": float(aug.hsv_v),
         "degrees": float(aug.degrees), "translate": float(aug.translate),

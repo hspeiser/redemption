@@ -9,8 +9,10 @@
 # ============================================================================
 
 [dataset]
-name = "gates_xl"                 # dataset folder under output_root
-output_root = "/home/ubuntu/binglebob/datasets"   # persistent NFS drive (generate ONCE)
+# Fine-tune uses Henry's REAL auto-labeled data at datasets/gates_real (extracted,
+# NOT generated). train_model.py points here; do NOT run generate_data with this name.
+name = "gates_real"               # dataset folder under output_root
+output_root = "/home/ubuntu/binglebob/datasets"   # persistent NFS drive
 # Number of RENDERED IMAGES per split (not instances). Some images may end up
 # with zero labelled gates (hard negatives) -- that is intentional and useful.
 # Sized for an xpose-scale model; nano/medium train on the same set.
