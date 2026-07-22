@@ -28,8 +28,10 @@ inner_height = 1500.0
 depth = 260.0
 
 [appearance]
-# Bright-orange frame colour in BGR (OpenCV order). ~ "safety orange".
+# Gate frame colour in BGR (OpenCV order). RED #fe3201 -- Henry's measured value
+# from the real AI-Grand-Prix gates (eroded-core median AND the decoded UE
+# EmissiveColor agree). Real rim/edge trim is orange #ff6c51 (not modelled here).
 # Photometric jitter around this is configured in datagen.toml.
-color_bgr = [0, 90, 255]
+color_bgr = [1, 50, 254]
 # Darker shade for the extruded side faces (depth cue), fraction of frame colour.
 side_face_darkness = 0.45
