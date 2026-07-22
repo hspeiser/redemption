@@ -8,6 +8,13 @@ root = "reports"
 format = "markdown"               # "markdown" (default) | "html"
 embed_images = true               # inline images (base64 for html; relative for md)
 
+[web]
+# Live progress website (scripts/serve_progress.py). Bind to 0.0.0.0 so it is
+# reachable over the tailnet at http://<machine-tailnet-ip>:<port>/.
+host = "0.0.0.0"
+port = 8000
+refresh_seconds = 15
+
 [plots]
 dpi = 130
 style = "seaborn-v0_8-darkgrid"   # matplotlib style
