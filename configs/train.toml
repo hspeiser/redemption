@@ -77,7 +77,9 @@ eval_subset = 200
 overlay_samples = 12
 
 [live]
-# Live in-process progress dashboard + PnP reconstruction curve each epoch.
+# Live in-process progress dashboard each epoch.
 enabled = true
-subset_images = 100
+subset_images = 100                        # images for the (synthetic-only) PnP reconstruction eval
 device = 0
+val_corner_eval = true                     # ALSO track corner RMSE on the real val set each epoch
+val_corner_images = 150                    # val subset for that (cached once) -> convergence curve on the GUI

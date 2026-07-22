@@ -17,9 +17,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
 from .config import DotDict  # noqa: E402
+from .dataset import dataset_root  # noqa: E402
 from .pnp import evaluate_checkpoint  # noqa: E402
 from .utils import ensure_dir, get_logger, write_json  # noqa: E402
 
@@ -75,7 +77,8 @@ def eval_last_checkpoint(run_dir: Path, cfg: DotDict, epoch: int, subset: int,
 
 
 def plot_dashboard(run_dir: Path, cfg: DotDict, df: pd.DataFrame,
-                   curve: list[dict], out_dir: Path) -> Path:
+                   curve: list[dict], out_dir: Path,
+                   val_curve: list[dict] | None = None) -> Path:
     """One-glance dashboard: losses + metrics + live PnP reconstruction error."""
     dpi = int(cfg.report.plots.dpi)
     try:
@@ -98,13 +101,21 @@ def plot_dashboard(run_dir: Path, cfg: DotDict, df: pd.DataFrame,
     ax[0, 1].set_title("Detection / pose metrics"); ax[0, 1].set_xlabel("epoch")
     ax[0, 1].legend(fontsize=6, ncol=2)
 
-    if pts:
+    vpts = [c for c in (val_curve or []) if c.get("corner_rmse_med") is not None]
+    if vpts:
+        # REAL-val corner-error convergence (label-based; needs no GT poses).
+        vep = [c["epoch"] for c in vpts]
+        ax[1, 0].plot(vep, [c["corner_rmse_med"] for c in vpts], "o-", color="#4C78A8", label="median")
+        ax[1, 0].plot(vep, [c["corner_rmse_p90"] for c in vpts], "s--", color="#E45756", label="p90")
+        ax[1, 0].set_title("REAL val corner RMSE vs epoch"); ax[1, 0].set_xlabel("epoch")
+        ax[1, 0].set_ylabel("px"); ax[1, 0].legend(fontsize=7)
+        ax[1, 1].plot(vep, [100 * c["det_rate"] for c in vpts], "o-", color="#54A24B")
+        ax[1, 1].set_title("REAL val detection rate"); ax[1, 1].set_xlabel("epoch"); ax[1, 1].set_ylabel("%")
+        head = f"val corner {vpts[-1]['corner_rmse_med']:.2f}px  det {100 * vpts[-1]['det_rate']:.1f}%"
+    elif pts:
         ep = [c["epoch"] for c in pts]
         ax[1, 0].plot(ep, [c["mean_corner_rmse"] for c in pts], "o-", color="#4C78A8")
-    ax[1, 0].set_title("PnP corner RMSE (live subset)"); ax[1, 0].set_xlabel("epoch"); ax[1, 0].set_ylabel("px")
-
-    if pts:
-        ep = [c["epoch"] for c in pts]
+        ax[1, 0].set_title("PnP corner RMSE (live subset)"); ax[1, 0].set_xlabel("epoch"); ax[1, 0].set_ylabel("px")
         ax[1, 1].plot(ep, [c["mean_trans_err"] for c in pts], "o-", color="#F58518", label="trans (m)")
         ax[1, 1].plot(ep, [c["wmean_trans_err"] for c in pts], "s--", color="#E45756", label="trans w (m)")
         ax[1, 1].set_ylabel("translation err (m)"); ax[1, 1].set_xlabel("epoch")
@@ -114,18 +125,85 @@ def plot_dashboard(run_dir: Path, cfg: DotDict, df: pd.DataFrame,
         h1, la1 = ax[1, 1].get_legend_handles_labels()
         h2, la2 = axr.get_legend_handles_labels()
         ax[1, 1].legend(h1 + h2, la1 + la2, fontsize=7, loc="upper right")
+        ax[1, 1].set_title("PnP reconstruction error (live subset)")
+        head = f"live PnP matches: {pts[-1]['n_matched']}"
     else:
-        ax[1, 1].text(0.5, 0.5, "no PnP matches yet\n(model still warming up)",
-                      ha="center", va="center", transform=ax[1, 1].transAxes)
-    ax[1, 1].set_title("PnP reconstruction error (live subset)")
+        ax[1, 0].set_title("corner RMSE (warming up)")
+        ax[1, 1].text(0.5, 0.5, "no eval yet", ha="center", va="center", transform=ax[1, 1].transAxes)
+        head = "warming up"
 
-    matched = pts[-1]["n_matched"] if pts else 0
-    fig.suptitle(f"Training progress — epoch {latest}  |  live PnP matches: {matched}", fontsize=13)
+    fig.suptitle(f"Training progress — epoch {latest}  |  {head}", fontsize=13)
     fig.tight_layout()
     out = ensure_dir(out_dir) / "progress_dashboard.png"
     fig.savefig(out, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
     return out
+
+
+_VAL_CACHE: dict = {}
+
+
+def _load_val_subset(cfg: DotDict, n: int):
+    """Load a fixed subset of val images + labeled corners into memory (once)."""
+    import cv2
+    root = dataset_root(cfg.datagen)
+    vi, vl = root / "images" / "val", root / "labels" / "val"
+    W = int(cfg.camera.resolution.width)
+    H = int(cfg.camera.resolution.height)
+    out = []
+    for ip in sorted(vi.glob("*"))[:n]:
+        lp = vl / (ip.stem + ".txt")
+        if not lp.exists():
+            continue
+        img = cv2.imread(str(ip))
+        if img is None:
+            continue
+        gts = []
+        for line in lp.read_text().strip().splitlines():
+            p = line.split()
+            if len(p) < 17:
+                continue
+            gts.append(np.array([[float(p[5 + i * 3]) * W, float(p[5 + i * 3 + 1]) * H]
+                                 for i in range(4)], float))
+        if gts:
+            out.append((img, gts))
+    return out
+
+
+def eval_val_corners(run_dir: Path, cfg: DotDict, n_images: int, device) -> dict | None:
+    """Corner RMSE of predicted vs LABELED corners on a val subset.
+
+    A real-data convergence metric that needs no GT poses (unlike the PnP eval):
+    just runs the current checkpoint on a cached val subset and compares to the
+    labeled corners. Returns median/p90 px + detection rate.
+    """
+    from .infer import infer_image, load_model
+    from .metrics import corner_rmse, match_by_center
+    if "cache" not in _VAL_CACHE:
+        _VAL_CACHE["cache"] = _load_val_subset(cfg, n_images)
+    cache = _VAL_CACHE["cache"]
+    weights = Path(run_dir) / "weights" / "last.pt"
+    if not cache or not weights.exists():
+        return None
+    model = load_model(str(weights))
+    imgsz = int(cfg.train.train.imgsz)
+    rmses, n_gt, n_match = [], 0, 0
+    for img, gts in cache:
+        n_gt += len(gts)
+        dets = infer_image(model, img, conf=0.25, imgsz=imgsz, device=device)
+        if not dets:
+            continue
+        pc = np.array([d.center_px for d in dets])
+        gc = np.array([g.mean(0) for g in gts])
+        for pi, gi in match_by_center(pc, gc, 60.0):
+            rmses.append(corner_rmse(dets[pi].kpts_px, gts[gi]))
+            n_match += 1
+    if not rmses:
+        return None
+    a = np.array(rmses)
+    return {"corner_rmse_med": float(np.median(a)),
+            "corner_rmse_p90": float(np.percentile(a, 90)),
+            "det_rate": n_match / max(n_gt, 1), "n": len(rmses)}
 
 
 def register_live_progress(model, cfg: DotDict) -> None:
@@ -142,7 +220,9 @@ def register_live_progress(model, cfg: DotDict) -> None:
         return
     subset = int(live.subset_images)
     device = live.get("device", cfg.train.train.device)
-    state: dict = {"curve": []}
+    val_eval = bool(live.get("val_corner_eval", False))
+    val_n = int(live.get("val_corner_images", 150))
+    state: dict = {"curve": [], "val_curve": []}
     log = get_logger()
 
     def _cb(trainer) -> None:
@@ -158,9 +238,19 @@ def register_live_progress(model, cfg: DotDict) -> None:
                 log.info(f"  live epoch {epoch}: PnP matches={res['n_matched']} "
                          f"corner_rmse={res.get('mean_corner_rmse')} "
                          f"trans_err={res.get('mean_trans_err')}")
+            # REAL-val corner-error convergence (label-based; no GT poses needed)
+            if val_eval:
+                vc = eval_val_corners(run_dir, cfg, val_n, device)
+                if vc is not None:
+                    vc["epoch"] = epoch
+                    state["val_curve"].append(vc)
+                    write_json(out / "val_corner_progress.json", {"curve": state["val_curve"]})
+                    log.info(f"  live epoch {epoch}: val corner RMSE "
+                             f"{vc['corner_rmse_med']:.2f}px (p90 {vc['corner_rmse_p90']:.2f}), "
+                             f"det {100 * vc['det_rate']:.1f}%")
             df = read_results(run_dir)
             if df is not None:
-                plot_dashboard(run_dir, cfg, df, state["curve"], out)
+                plot_dashboard(run_dir, cfg, df, state["curve"], out, val_curve=state["val_curve"])
             try:
                 import torch
                 torch.cuda.empty_cache()
