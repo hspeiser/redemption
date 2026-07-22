@@ -19,7 +19,7 @@ n_test = 1000
 seed = 1234                       # master seed; per-image seeds derived from it
 
 [runtime]
-workers = 0                       # 0 = auto (os.cpu_count() - 1). Rendering is CPU-bound.
+workers = 20                      # gipsydanger has 24 cores; leave a few for the OS
 overwrite = true                  # wipe an existing dataset of the same name first
 
 [scene]

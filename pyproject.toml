@@ -6,8 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "ultralytics>=8.3.0",
-    "torch>=2.4.0",
-    "torchvision>=0.19.0",
+    "torch>=2.7.0",
+    "torchvision>=0.22.0",
     "opencv-python>=4.10.0",
     "numpy>=1.26,<2.2",
     "scipy>=1.13",
@@ -19,18 +19,19 @@ dependencies = [
 ]
 
 # ---------------------------------------------------------------------------
-# GPU wheels. The RTX 3050 (driver 591.74, CUDA 12.6 runtime) is served by the
-# cu124 PyTorch wheels, which are forward-compatible with a 12.6 driver.
-# `uv sync` will pull torch/torchvision from the dedicated index below.
+# GPU wheels -- gipsydanger-medium branch.
+# The RTX 5090 is Blackwell (sm_120) and REQUIRES CUDA 12.8 kernels, so we pull
+# the cu128 PyTorch wheels (torch >= 2.7). The cu124 wheels used on the local
+# RTX 3050 (Ampere) have no Blackwell kernels and would fail here.
 # ---------------------------------------------------------------------------
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-torch = { index = "pytorch-cu124" }
-torchvision = { index = "pytorch-cu124" }
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
 
 [build-system]
 requires = ["hatchling"]
