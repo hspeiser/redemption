@@ -20,10 +20,14 @@ weights = "yolo11m-pose.pt"
 
 [train]
 epochs = 100
-batch = 64                        # RTX 5090 32 GB has ample room for medium @ 640
+# SHARED BOX: batch 64 used ~30.5/32 GB and destabilised the machine. Keep batch
+# small and hard-cap VRAM (gpu_mem_fraction) so we never hog the 5090 — Henry
+# shares this GPU. batch 16 @ 640 for medium uses ~8 GB; the cap is a safety ceiling.
+batch = 16
+gpu_mem_fraction = 0.45           # hard cap: our process may use <=45% (~14.5GB) of the 32GB card
 imgsz = 640                       # letterboxed; source images are 640x360
 device = 0                        # CUDA device index; "cpu" to force CPU
-workers = 16                      # gipsydanger has 24 logical cores
+workers = 8                       # modest to keep system-RAM pressure low on the shared box
 amp = true                        # automatic mixed precision (saves VRAM)
 patience = 30                     # early-stopping patience (epochs)
 seed = 0

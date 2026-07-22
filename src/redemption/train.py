@@ -59,6 +59,34 @@ def build_overrides(cfg: DotDict, data_yaml: Path) -> dict:
     }
 
 
+def apply_gpu_limit(cfg: DotDict) -> None:
+    """Hard-cap this process's GPU memory to a fraction of the card.
+
+    On a SHARED GPU box this prevents us from ever reserving the whole card and
+    destabilising other users' work. Controlled by ``[train].gpu_mem_fraction``
+    (0 or unset = no cap). Uses ``torch.cuda.set_per_process_memory_fraction``,
+    which bounds the caching allocator to ``fraction * total`` on the device.
+    """
+    log = get_logger()
+    t = cfg.train.train
+    frac = t.get("gpu_mem_fraction", 0)
+    try:
+        frac = float(frac)
+    except (TypeError, ValueError):
+        frac = 0.0
+    dev = t.device
+    if frac <= 0 or str(dev) == "cpu":
+        return
+    import torch
+    if not torch.cuda.is_available():
+        return
+    idx = int(dev) if str(dev).isdigit() else 0
+    torch.cuda.set_per_process_memory_fraction(frac, idx)
+    total = torch.cuda.get_device_properties(idx).total_memory / 1e9
+    log.info(f"GPU memory capped at {frac:.0%} of {total:.0f}GB "
+             f"(~{frac * total:.1f}GB) on cuda:{idx} — leaves the rest for other users")
+
+
 def train(cfg: DotDict | None = None) -> dict:
     """Train a YOLO-Pose model. Returns dict(run_dir, results_csv, metrics)."""
     log = get_logger()
@@ -68,6 +96,8 @@ def train(cfg: DotDict | None = None) -> dict:
     data_yaml = root / "data.yaml"
     if not data_yaml.exists():
         write_data_yaml(root)
+
+    apply_gpu_limit(cfg)  # cap VRAM BEFORE any model/CUDA allocations
 
     model = load_model(str(cfg.train.model.weights))
     register_live_progress(model, cfg)  # live in-process dashboard + PnP curve each epoch
