@@ -213,9 +213,10 @@ def training_report(cfg: DotDict, train_result: dict, curve_result: dict,
                     montage_result: dict, pnp_result: dict) -> Path:
     """Build the post-training report combining training curves + PnP reconstruction."""
     log = get_logger()
+    from .train import resolve_model
     fmt = cfg.report.output.format
     rdir = Path(cfg.report.output.root) / f"training_{cfg.datagen.dataset.name}_{timestamp()}"
-    rb = ReportBuilder(rdir, f"Training + PnP Report — {cfg.train.model.weights}", fmt)
+    rb = ReportBuilder(rdir, f"Training + PnP Report — {resolve_model(cfg)['weights']}", fmt)
     th = cfg.report.thresholds
 
     # --- headline success indicators ---

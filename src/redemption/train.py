@@ -30,14 +30,61 @@ from .utils import ensure_dir, get_logger, read_json  # noqa: E402
 from .viz import montage, overlay_pred_gt  # noqa: E402
 
 
-def build_overrides(cfg: DotDict, data_yaml: Path) -> dict:
+def resolve_model(cfg: DotDict) -> dict:
+    """Resolve which model to train -> {weights, batch, name}.
+
+    Two schemas are supported in ``configs/train.toml``:
+      * **Profile selector** — ``[model].active = "nano"`` picks the ``[model.nano]``
+        table (weights/batch/name). This lets you switch nano -> medium -> xpose on
+        the SAME dataset with a one-line edit (no data regen).
+      * **Legacy** — a single ``[model].weights`` with ``[train].batch`` / ``[train].name``.
+    """
+    m = cfg.train.model
+    t = cfg.train.train
+    active = m.get("active") if hasattr(m, "get") else None
+    if active:
+        if active not in m:
+            raise KeyError(f"[model].active='{active}' but no [model.{active}] table in train.toml")
+        p = m[active]
+        return {"weights": str(p.weights), "batch": int(p.get("batch", t.batch)),
+                "name": str(p.get("name", t.name))}
+    return {"weights": str(m.weights), "batch": int(t.batch), "name": str(t.name)}
+
+
+def apply_gpu_limit(cfg: DotDict) -> None:
+    """Optionally hard-cap this process's GPU memory (shared-box safety).
+
+    Controlled by ``[train].gpu_mem_fraction`` (0 or unset = no cap). Bounds the
+    caching allocator to ``fraction * total`` on the training device so we can
+    never reserve the whole card on a machine shared with other users. On a
+    dedicated box leave it at 0.
+    """
+    log = get_logger()
+    t = cfg.train.train
+    try:
+        frac = float(t.get("gpu_mem_fraction", 0))
+    except (TypeError, ValueError):
+        frac = 0.0
+    if frac <= 0 or str(t.device) == "cpu":
+        return
+    import torch
+    if not torch.cuda.is_available():
+        return
+    idx = int(t.device) if str(t.device).isdigit() else 0
+    torch.cuda.set_per_process_memory_fraction(frac, idx)
+    total = torch.cuda.get_device_properties(idx).total_memory / 1e9
+    log.info(f"GPU memory capped at {frac:.0%} of {total:.0f}GB "
+             f"(~{frac * total:.1f}GB) on cuda:{idx}")
+
+
+def build_overrides(cfg: DotDict, data_yaml: Path, prof: dict) -> dict:
     t = cfg.train.train
     ck = cfg.train.checkpoints
     aug = cfg.train.augment
     return {
         "data": str(data_yaml),
         "epochs": int(t.epochs),
-        "batch": int(t.batch),
+        "batch": int(prof["batch"]),
         "imgsz": int(t.imgsz),
         "device": t.device,
         "workers": int(t.workers),
@@ -46,7 +93,7 @@ def build_overrides(cfg: DotDict, data_yaml: Path) -> dict:
         "seed": int(t.seed),
         "cos_lr": bool(t.cos_lr),
         "project": str(t.project),
-        "name": str(t.name),
+        "name": str(prof["name"]),
         "exist_ok": bool(t.exist_ok),
         "save": bool(ck.save),
         "save_period": int(ck.save_period),
@@ -69,10 +116,13 @@ def train(cfg: DotDict | None = None) -> dict:
     if not data_yaml.exists():
         write_data_yaml(root)
 
-    model = load_model(str(cfg.train.model.weights))
+    prof = resolve_model(cfg)
+    apply_gpu_limit(cfg)  # cap VRAM before any CUDA allocation (no-op if unset)
+
+    model = load_model(prof["weights"])
     register_live_progress(model, cfg)  # live in-process dashboard + PnP curve each epoch
-    overrides = build_overrides(cfg, data_yaml)
-    log.info(f"Training {cfg.train.model.weights} on {data_yaml} "
+    overrides = build_overrides(cfg, data_yaml, prof)
+    log.info(f"Training {prof['weights']} on {data_yaml} "
              f"(epochs={overrides['epochs']}, batch={overrides['batch']}, device={overrides['device']})")
 
     results = model.train(**overrides)
