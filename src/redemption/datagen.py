@@ -70,6 +70,10 @@ def compute_instances(
     for i, pj in enumerate(projections):
         if not np.all(pj.inner_in_front):
             continue
+        # 8-kpt: an outer corner behind the camera projects to a garbage pixel that
+        # can sign-flip back in-frame -> a silently-wrong label. Require all 8 in front.
+        if use_outer and not np.all(pj.outer_in_front):
+            continue
         pix = pj.front_inner  # (4,2) inner keypoints (area/PnP reference)
         kp = np.vstack([pj.front_inner, pj.front_outer]) if use_outer else pix
 

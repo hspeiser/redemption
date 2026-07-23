@@ -34,6 +34,7 @@ class GateProjection:
     front_inner: np.ndarray   # (4, 2) inner opening = the keypoints
     back_outer: np.ndarray    # (4, 2) outer boundary, back face (Z_obj = depth)
     inner_in_front: np.ndarray  # (4,) bool, corner is in front of camera
+    outer_in_front: np.ndarray  # (4,) bool, outer corner in front (8-kpt visibility)
     inner_depth: np.ndarray   # (4,) camera-frame Z of each inner corner
     center_depth: float       # gate center depth (for painter's sort)
     normal_cam: np.ndarray    # (3,) front-face normal in camera frame
@@ -42,7 +43,8 @@ class GateProjection:
 def project_gate(camera: PinholeCamera, gate: Gate, pose: GatePose) -> GateProjection:
     """Project all corner sets of one gate to pixels (single source of truth)."""
     inner_cam = pose.transform(gate.inner_corners(0.0))
-    front_outer, _ = camera.project(pose.transform(gate.outer_corners(0.0)))
+    outer_cam = pose.transform(gate.outer_corners(0.0))
+    front_outer, _ = camera.project(outer_cam)
     front_inner, _ = camera.project(inner_cam)
     back_outer, _ = camera.project(pose.transform(gate.outer_corners(gate.depth)))
     normal_cam = pose.R @ np.array([0.0, 0.0, 1.0])
@@ -51,6 +53,7 @@ def project_gate(camera: PinholeCamera, gate: Gate, pose: GatePose) -> GateProje
         front_inner=front_inner,
         back_outer=back_outer,
         inner_in_front=inner_cam[:, 2] > 1e-6,
+        outer_in_front=outer_cam[:, 2] > 1e-6,
         inner_depth=inner_cam[:, 2].copy(),
         center_depth=pose.depth,
         normal_cam=normal_cam,

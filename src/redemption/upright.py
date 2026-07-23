@@ -86,6 +86,84 @@ def _lm(residual_fn, x0, iters=25):
     return x, math.sqrt(cost / max(r.size / 2, 1))
 
 
+# ---------------------------------------------------------------------------
+# 8-keypoint (inner + outer) upright solver -- the depth-observability path.
+#
+# Both squares are coplanar (front face, gate Z=0). The OUTER square has 1.8x the
+# metric baseline of the inner, so its corners move ~1.8x more per metre of range:
+# fitting both together tightens the (otherwise ill-conditioned) depth by ~2x --
+# exactly the fronto-parallel far-gate tail the EKF flagged. Same gravity ("up")
+# constraint kills the planar mirror flip; parametrised by [center(3), psi(1)].
+# ---------------------------------------------------------------------------
+def model_offsets_8(inner_half=0.75, outer_half=1.35) -> np.ndarray:
+    """(8,2) in-plane (lateral, up) metric offsets: inner TL,TR,BR,BL then outer."""
+    return np.vstack([_SIGNS * inner_half, _SIGNS * outer_half])
+
+
+def corners_camera_model(center_c, psi, up_c, h1, h2, offsets) -> np.ndarray:
+    """Project an arbitrary (N,2) in-plane (lateral, up) metric model into cam frame."""
+    lat_c = math.cos(psi) * h1 + math.sin(psi) * h2
+    off = np.asarray(offsets, float)
+    return (np.asarray(center_c, float)[None, :]
+            + off[:, :1] * lat_c[None, :]
+            + off[:, 1:] * up_c[None, :])
+
+
+def solve_upright8(image_pts, down_cam, K, inner_half=0.75, outer_half=1.35,
+                   weights=None, seed_rt=None):
+    """Upright-constrained pose from 8 corners (inner 0-3, outer 4-7).
+
+    ``image_pts`` is (8,2) pixels in datagen order: inner TL,TR,BR,BL then outer
+    TL,TR,BR,BL. ``weights`` is an optional (8,) per-corner confidence. Returns the
+    same dict shape as :func:`solve_upright` (center, psi, R, tvec, rms_px) or None.
+    """
+    obs = np.asarray(image_pts, float).reshape(8, 2)
+    if not np.isfinite(obs).all():
+        return None
+    up_c, h1, h2 = vertical_basis_camera(down_cam)
+    offsets = model_offsets_8(inner_half, outer_half)
+    w = np.ones(8) if weights is None else np.sqrt(np.clip(np.asarray(weights, float), 1e-3, None))
+    w = np.repeat(w, 2)
+
+    # seed heading/range from the INNER quad (same geometry as the 4-pt solver)
+    inner = obs[:4]
+    if seed_rt is not None:
+        R0, t0 = seed_rt
+        center0 = np.asarray(t0, float).reshape(3)
+        lat0 = np.asarray(R0, float)[:, 0]
+        psi0 = math.atan2(lat0 @ h2, lat0 @ h1)
+    else:
+        edge = max(np.linalg.norm(inner[a] - inner[b]) for a, b in ((0, 1), (1, 2), (2, 3), (3, 0)))
+        if edge < 6:
+            return None
+        rng0 = 2 * inner_half * K[0, 0] / edge
+        cpx = inner.mean(0)
+        ray = np.array([(cpx[0] - K[0, 2]) / K[0, 0], (cpx[1] - K[1, 2]) / K[1, 1], 1.0])
+        center0 = ray / np.linalg.norm(ray) * rng0
+        psi0 = 0.0
+
+    def res(x):
+        pts = corners_camera_model(x[:3], x[3], up_c, h1, h2, offsets)
+        return ((_project(pts, K) - obs).ravel()) * w
+
+    if seed_rt is None:
+        best = None
+        for p0 in np.linspace(-math.pi, math.pi, 8, endpoint=False):
+            xc, rc = _lm(res, np.array([*center0, p0]), iters=15)
+            if best is None or rc < best[1]:
+                best = (xc, rc)
+        x, rms = _lm(res, best[0], iters=10)
+    else:
+        x, rms = _lm(res, np.array([*center0, psi0]))
+
+    center, psi = x[:3], float(x[3])
+    if not (0.3 <= float(np.linalg.norm(center)) <= 80.0):
+        return None
+    lat_c = math.cos(psi) * h1 + math.sin(psi) * h2
+    R = np.column_stack([lat_c, up_c, np.cross(lat_c, up_c)])
+    return {"center": center, "psi": psi, "R": R, "tvec": center, "rms_px": rms}
+
+
 def solve_upright(image_pts, down_cam, K, half=0.75, psi_fixed=None,
                   weights=None, seed_rt=None):
     """Upright-constrained gate pose.

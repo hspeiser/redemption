@@ -23,7 +23,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .refine import refine_corners
-from .upright import corners_camera, solve_upright, vertical_basis_camera
+from .upright import (corners_camera, corners_camera_model, model_offsets_8,
+                      solve_upright, solve_upright8, vertical_basis_camera)
 
 
 def _project(pts_c, K):
@@ -121,6 +122,38 @@ def pose_covariance(center: np.ndarray, psi: float, down_cam: np.ndarray,
     return cov
 
 
+def pose_covariance8(center: np.ndarray, psi: float, down_cam: np.ndarray,
+                     K: np.ndarray, sigma_px, inner_half=0.75, outer_half=1.35) -> np.ndarray:
+    """4x4 covariance of [cx,cy,cz,psi] for the 8-corner (inner+outer) fit.
+
+    ``sigma_px`` is scalar or (8,). The outer corners' larger metric baseline makes
+    the depth block far tighter than the 4-corner version.
+    """
+    up_c, h1, h2 = vertical_basis_camera(down_cam)
+    offsets = model_offsets_8(inner_half, outer_half)
+    x0 = np.array([center[0], center[1], center[2], psi], float)
+
+    def g(x):
+        pts = corners_camera_model(x[:3], x[3], up_c, h1, h2, offsets)
+        return _project(pts, K).ravel()  # (16,)
+
+    r0 = g(x0)
+    J = np.empty((r0.size, 4))
+    for j in range(4):
+        dx = np.zeros(4)
+        dx[j] = 1e-4
+        J[:, j] = (g(x0 + dx) - r0) / 1e-4
+
+    sig = np.full(8, float(sigma_px)) if np.isscalar(sigma_px) else np.asarray(sigma_px, float)
+    var = np.repeat(sig ** 2, 2)
+    A = J.T @ (J / var[:, None])
+    try:
+        cov = np.linalg.inv(A + 1e-9 * np.eye(4))
+    except np.linalg.LinAlgError:
+        cov = np.full((4, 4), np.inf)
+    return cov
+
+
 def depth_sigma_m(center: np.ndarray, pos_cov: np.ndarray) -> float:
     """1-sigma position uncertainty projected along the viewing ray (the depth axis)."""
     ray = np.asarray(center, float)
@@ -165,23 +198,34 @@ def detect_gates(model, image, K, dist, half=0.75, down_cam=None,
     dets = infer_image(model, image, conf=conf, imgsz=imgsz, device=device)
     out: list[GateDetection] = []
     for d in dets:
-        corners = refine_corners(image, d.kpts_px) if refine else np.asarray(d.kpts_px, float)
+        kpts = refine_corners(image, d.kpts_px) if refine else np.asarray(d.kpts_px, float)
+        n_kp = len(kpts)
+        use_outer = n_kp >= 8                    # 8-kpt model: inner 0-3, outer 4-7
+        corners = kpts[:4]                        # inner quad drives flags/contract
+        kconf = np.asarray(d.kpt_conf, float)
         ap = apparent_size_px(corners)
         of = is_overflow(corners, W, H)
         par = parallax_score(corners)
         low_par = (par < 0.05) and (ap > 90.0)   # big + fronto-parallel: wrong-basin risk
         sig = corner_sigma(ap, of)
         gd = GateDetection(corners_px=corners, corner_sigma_px=sig, box_conf=float(d.box_conf),
-                           kpt_conf=np.asarray(d.kpt_conf, float), overflow=of, apparent_px=ap,
+                           kpt_conf=kconf[:4], overflow=of, apparent_px=ap,
                            low_parallax=low_par, parallax=par)
+        if use_outer:
+            gd.extra["outer_px"] = kpts[4:8]
         if down_cam is not None and not of:
-            # seed the upright solve with IPPE PnP (avoids the unseeded multi-start
-            # landing in a worse basin -- the EKF team's §3a robustness ask)
-            seed = solve_pnp(obj_up, corners, K, dist, "IPPE", True, True, d.kpt_conf)
-            seed_rt = (seed["R"], seed["tvec"]) if seed is not None else None
-            sol = solve_upright(corners, down_cam, K, half, weights=d.kpt_conf, seed_rt=seed_rt)
+            if use_outer:
+                # 8-corner upright fit: the outer square's larger baseline tightens depth.
+                sol = solve_upright8(kpts[:8], down_cam, K, weights=kconf[:8])
+                cov_fn = lambda s: pose_covariance8(s["center"], s["psi"], down_cam, K, sig)
+            else:
+                # seed the 4-pt upright solve with IPPE PnP (EKF team's §3a robustness ask)
+                seed = solve_pnp(obj_up, corners, K, dist, "IPPE", True, True, kconf[:4])
+                seed_rt = (seed["R"], seed["tvec"]) if seed is not None else None
+                sol = solve_upright(corners, down_cam, K, half, weights=kconf[:4], seed_rt=seed_rt)
+                cov_fn = lambda s: pose_covariance(s["center"], s["psi"], down_cam, K, half, sig)
             if sol is not None:
-                cov4 = pose_covariance(sol["center"], sol["psi"], down_cam, K, half, sig)
+                cov4 = cov_fn(sol)
                 gd.center_cam = sol["center"]
                 gd.psi = sol["psi"]
                 gd.R = sol["R"]
