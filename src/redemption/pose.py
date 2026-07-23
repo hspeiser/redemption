@@ -216,7 +216,10 @@ def detect_gates(model, image, K, dist, half=0.75, down_cam=None,
         if down_cam is not None and not of:
             if use_outer:
                 # 8-corner upright fit: the outer square's larger baseline tightens depth.
-                sol = solve_upright8(kpts[:8], down_cam, K, weights=kconf[:8])
+                # Seed with the inner-4 IPPE solve so it's a single LM (no slow multi-start).
+                seed = solve_pnp(obj_up, corners, K, dist, "IPPE", True, True, kconf[:4])
+                seed_rt = (seed["R"], seed["tvec"]) if seed is not None else None
+                sol = solve_upright8(kpts[:8], down_cam, K, weights=kconf[:8], seed_rt=seed_rt)
                 cov_fn = lambda s: pose_covariance8(s["center"], s["psi"], down_cam, K, sig)
             else:
                 # seed the 4-pt upright solve with IPPE PnP (EKF team's §3a robustness ask)
