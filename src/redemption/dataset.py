@@ -60,16 +60,21 @@ def format_label_line(class_id: int, bbox_norm: tuple[float, float, float, float
     return " ".join(parts)
 
 
-def write_data_yaml(root: Path) -> Path:
-    """Write ``data.yaml`` describing the pose dataset for Ultralytics."""
+def write_data_yaml(root: Path, n_kpts: int = 4) -> Path:
+    """Write ``data.yaml`` describing the pose dataset for Ultralytics.
+
+    ``n_kpts`` = 4 (inner corners) or 8 (inner + outer). Flip index mirrors L<->R
+    within each corner group.
+    """
+    flip = FLIP_IDX if n_kpts == 4 else [1, 0, 3, 2, 5, 4, 7, 6]
     data = {
         "path": str(root.resolve()),
         "train": "images/train",
         "val": "images/val",
         "test": "images/test",
         "names": {0: "gate"},
-        "kpt_shape": [len(CORNER_NAMES), 3],
-        "flip_idx": FLIP_IDX,
+        "kpt_shape": [int(n_kpts), 3],
+        "flip_idx": flip,
     }
     out = root / "data.yaml"
     with open(out, "w", encoding="utf-8") as fh:

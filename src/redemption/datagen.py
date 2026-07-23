@@ -51,9 +51,17 @@ def compute_instances(
     poses: list,
     projections: list[GateProjection],
     vis_cfg: DotDict,
+    keypoints: str = "inner",
 ) -> list[dict]:
-    """Return label+meta dicts for every gate that passes the visibility filter."""
+    """Return label+meta dicts for every gate that passes the visibility filter.
+
+    ``keypoints`` = "inner" (4 inner corners) or "inner_outer" (8: inner then outer
+    corners). For 8-kpt, ALL 8 corners must be in-frame/unoccluded, which biases the
+    kept gates toward mid/far (where the outer boundary fits) -- exactly the range
+    where the larger baseline improves depth.
+    """
     W, H = camera.width, camera.height
+    use_outer = keypoints == "inner_outer"
     instances: list[dict] = []
 
     # Pre-compute silhouettes/holes for occlusion tests.
@@ -62,11 +70,12 @@ def compute_instances(
     for i, pj in enumerate(projections):
         if not np.all(pj.inner_in_front):
             continue
-        pix = pj.front_inner  # (4,2) keypoints
+        pix = pj.front_inner  # (4,2) inner keypoints (area/PnP reference)
+        kp = np.vstack([pj.front_inner, pj.front_outer]) if use_outer else pix
 
         if bool(vis_cfg.require_all_corners_in_frame):
-            if (pix[:, 0].min() < 0 or pix[:, 0].max() >= W
-                    or pix[:, 1].min() < 0 or pix[:, 1].max() >= H):
+            if (kp[:, 0].min() < 0 or kp[:, 0].max() >= W
+                    or kp[:, 1].min() < 0 or kp[:, 1].max() >= H):
                 continue
 
         if _polygon_area(pix) < float(vis_cfg.min_area_px):
@@ -77,7 +86,7 @@ def compute_instances(
             for k, pk in enumerate(projections):
                 if k == i or pk.center_depth >= pj.center_depth:
                     continue  # only strictly-nearer gates can occlude
-                for c in pix:
+                for c in kp:
                     if polygon_contains(sils[k], c) and not polygon_contains(pk.front_inner, c):
                         occluded = True
                         break
@@ -86,14 +95,16 @@ def compute_instances(
             if occluded:
                 continue
 
-        instances.append(_make_instance(poses[i], pj, camera))
+        instances.append(_make_instance(poses[i], pj, camera, use_outer))
 
     return instances
 
 
-def _make_instance(pose, proj: GateProjection, camera: PinholeCamera) -> dict:
+def _make_instance(pose, proj: GateProjection, camera: PinholeCamera,
+                   use_outer: bool = False) -> dict:
     W, H = camera.width, camera.height
     pix = proj.front_inner
+    kp = np.vstack([proj.front_inner, proj.front_outer]) if use_outer else pix
 
     # Bounding box from the clipped outer silhouette, widened to cover keypoints.
     sil = np.vstack([proj.front_outer, proj.back_outer])
@@ -106,7 +117,7 @@ def _make_instance(pose, proj: GateProjection, camera: PinholeCamera) -> dict:
     bw, bh = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
     bbox_norm = ((x0 + x1) / 2 / W, (y0 + y1) / 2 / H, bw / W, bh / H)
 
-    kpts_norm = [(float(x) / W, float(y) / H, 2) for x, y in pix]
+    kpts_norm = [(float(x) / W, float(y) / H, 2) for x, y in kp]
     rvec, tvec = pose.rvec_tvec()
     meta = {
         "pitch_deg": pose.pitch_deg,
@@ -115,7 +126,8 @@ def _make_instance(pose, proj: GateProjection, camera: PinholeCamera) -> dict:
         "depth": pose.depth,
         "rvec": rvec.tolist(),
         "tvec": tvec.tolist(),
-        "corners_px": pix.tolist(),
+        "corners_px": pix.tolist(),                 # inner (PnP/range reference)
+        "outer_px": proj.front_outer.tolist() if use_outer else None,
     }
     return {"bbox_norm": bbox_norm, "kpts_norm": kpts_norm, "meta": meta}
 
@@ -126,7 +138,8 @@ def generate_scene(camera, gate, dg: DotDict, rng: np.random.Generator):
     n = int(rng.integers(int(scene.min_gates), int(scene.max_gates) + 1))
     poses = [sample_pose(camera, dg.pose, rng) for _ in range(n)]
     image, projections = render_scene(camera, gate, poses, dg, rng)
-    instances = compute_instances(camera, gate, poses, projections, dg.visibility)
+    kp = dg.dataset.get("keypoints", "inner") if hasattr(dg.dataset, "get") else "inner"
+    instances = compute_instances(camera, gate, poses, projections, dg.visibility, keypoints=kp)
     return image, instances
 
 
@@ -185,7 +198,8 @@ def generate(cfg: DotDict | None = None) -> dict:
     log.info(f"Camera: {camera.width}x{camera.height}  HFoV={camera.hfov_deg:.1f}  "
              f"VFoV={camera.vfov_deg:.1f}")
     prepare_dirs(root, bool(dg.runtime.overwrite))
-    write_data_yaml(root)
+    n_kpts = 8 if str(dg.dataset.get("keypoints", "inner")) == "inner_outer" else 4
+    write_data_yaml(root, n_kpts=n_kpts)
 
     counts = {"train": int(dg.dataset.n_train), "val": int(dg.dataset.n_val),
               "test": int(dg.dataset.n_test)}

@@ -121,7 +121,8 @@ def train(cfg: DotDict | None = None) -> dict:
     root = dataset_root(cfg.datagen)
     data_yaml = root / "data.yaml"
     if not data_yaml.exists():
-        write_data_yaml(root)
+        n_kpts = 8 if str(cfg.datagen.dataset.get("keypoints", "inner")) == "inner_outer" else 4
+        write_data_yaml(root, n_kpts=n_kpts)
 
     prof = resolve_model(cfg)
     apply_gpu_limit(cfg)  # cap VRAM before any CUDA allocation (no-op if unset)

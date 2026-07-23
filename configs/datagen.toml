@@ -9,16 +9,14 @@
 # ============================================================================
 
 [dataset]
-# Fine-tune uses Henry's REAL auto-labeled data at datasets/gates_real (extracted,
-# NOT generated). train_model.py points here; do NOT run generate_data with this name.
-name = "gates_real"               # dataset folder under output_root
+# 8-KEYPOINT synthetic set (inner + outer corners) for the depth-observability retrain.
+name = "gates_8kpt"               # dataset folder under output_root
 output_root = "/home/ubuntu/binglebob/datasets"   # persistent NFS drive
-# Number of RENDERED IMAGES per split (not instances). Some images may end up
-# with zero labelled gates (hard negatives) -- that is intentional and useful.
-# Sized for an xpose-scale model; nano/medium train on the same set.
-n_train = 50000
-n_val = 5000
-n_test = 5000
+keypoints = "inner_outer"         # "inner" (4) | "inner_outer" (8: inner then outer)
+# Number of RENDERED IMAGES per split (not instances).
+n_train = 30000
+n_val = 3000
+n_test = 3000
 seed = 1234                       # master seed; per-image seeds derived from it
 
 [runtime]

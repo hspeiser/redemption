@@ -13,8 +13,15 @@ dataset_name = "gates_xl"                  # must match datagen.toml [dataset].n
 dataset_root = "/home/ubuntu/binglebob/datasets"
 
 [model]
-# One-line model switch: nano | medium | xpose | finetune
-active = "finetune"
+# One-line model switch: nano | medium | xpose | finetune | nano8
+active = "nano8"
+
+[model.nano8]
+# 8-keypoint (inner+outer) nano from the COCO pretrained base (head adapts to
+# kpt_shape [8,3] from data.yaml). The depth-observability retrain.
+weights = "yolo11n-pose.pt"
+batch = 192
+name = "gates8_nano"
 
 [model.finetune]
 # Fine-tune our synthetic-pretrained nano on Henry's REAL auto-labeled data.
@@ -39,10 +46,10 @@ batch = 16                                 # big model; lower to 12 if it OOMs
 name = "gates_xpose"
 
 [train]
-epochs = 40                                # fine-tune: fewer epochs from a strong init
+epochs = 80                                # fresh 8-kpt head from COCO backbone
 batch = 16                                 # fallback for legacy schema (unused when [model].active set)
 gpu_mem_fraction = 0                       # dedicated box -> no cap
-lr0 = 0.003                                # fine-tune LR (not from-scratch); Henry's v3 recipe
+lr0 = 0.01                                 # training a new head -> normal LR
 pose = 14.0                                # weight pose/keypoint loss up (corner precision is the goal)
 kobj = 1.5
 cache = "ram"                              # load dataset into RAM once (dataset is on NFS; 200 GB RAM)
@@ -78,7 +85,9 @@ overlay_samples = 12
 
 [live]
 # Live in-process progress dashboard each epoch.
-enabled = true
+# NOTE: the PnP/val-corner evals assume 4 keypoints -> disabled for the 8-kpt run
+# (Ultralytics results.csv still logs losses + pose mAP; 8-kpt eval runs post-train).
+enabled = false
 subset_images = 100                        # images for the (synthetic-only) PnP reconstruction eval
 device = 0
 val_corner_eval = true                     # ALSO track corner RMSE on the real val set each epoch
