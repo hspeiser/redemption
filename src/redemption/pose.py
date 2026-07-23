@@ -60,6 +60,22 @@ def apparent_size_px(corners_px: np.ndarray) -> float:
     return float(np.mean(e))
 
 
+def parallax_score(corners_px: np.ndarray) -> float:
+    """Perspective foreshortening of the quad in [0, 1]. ~0 = fronto-parallel.
+
+    Opposite edges of a square differ in projected length under perspective (the
+    nearer edge is longer). Near-fronto-parallel views have almost equal opposite
+    edges -> low score -> DEPTH is ill-conditioned (the wrong-basin risk the EKF
+    flagged). Complements the analytic covariance with a cheap pre-solve signal.
+    """
+    c = np.asarray(corners_px, float)  # TL,TR,BR,BL
+    top, bot = np.linalg.norm(c[1] - c[0]), np.linalg.norm(c[2] - c[3])
+    left, right = np.linalg.norm(c[3] - c[0]), np.linalg.norm(c[2] - c[1])
+    fh = abs(top - bot) / max(top, bot, 1e-6)      # vertical-tilt foreshortening
+    fv = abs(left - right) / max(left, right, 1e-6)  # horizontal-tilt foreshortening
+    return float(max(fh, fv))
+
+
 def is_overflow(corners_px: np.ndarray, W: int, H: int, margin: float = 1.5) -> bool:
     """True if any corner is at/over the frame border or the gate ~fills the frame."""
     c = np.asarray(corners_px, float)
@@ -123,6 +139,8 @@ class GateDetection:
     kpt_conf: np.ndarray                   # (4,)
     overflow: bool                         # truncated / gate fills frame -> distrust
     apparent_px: float
+    low_parallax: bool = False             # large + near-fronto-parallel -> depth unreliable
+    parallax: float = 0.0                  # perspective foreshortening [0,1] (0 = fronto-parallel)
     center_cam: np.ndarray | None = None   # gate center in camera frame (m)
     psi: float | None = None               # gate heading (rad)
     R: np.ndarray | None = None            # gate rotation (cam<-gate)
@@ -141,18 +159,27 @@ def detect_gates(model, image, K, dist, half=0.75, down_cam=None,
     are still returned, which is enough for the estimator to consume).
     """
     from .infer import infer_image
+    from .pnp import solve_pnp
     H, W = image.shape[:2]
+    obj_up = np.array([[-half, half, 0.], [half, half, 0.], [half, -half, 0.], [-half, -half, 0.]])
     dets = infer_image(model, image, conf=conf, imgsz=imgsz, device=device)
     out: list[GateDetection] = []
     for d in dets:
         corners = refine_corners(image, d.kpts_px) if refine else np.asarray(d.kpts_px, float)
         ap = apparent_size_px(corners)
         of = is_overflow(corners, W, H)
+        par = parallax_score(corners)
+        low_par = (par < 0.05) and (ap > 90.0)   # big + fronto-parallel: wrong-basin risk
         sig = corner_sigma(ap, of)
         gd = GateDetection(corners_px=corners, corner_sigma_px=sig, box_conf=float(d.box_conf),
-                           kpt_conf=np.asarray(d.kpt_conf, float), overflow=of, apparent_px=ap)
+                           kpt_conf=np.asarray(d.kpt_conf, float), overflow=of, apparent_px=ap,
+                           low_parallax=low_par, parallax=par)
         if down_cam is not None and not of:
-            sol = solve_upright(corners, down_cam, K, half, weights=d.kpt_conf)
+            # seed the upright solve with IPPE PnP (avoids the unseeded multi-start
+            # landing in a worse basin -- the EKF team's §3a robustness ask)
+            seed = solve_pnp(obj_up, corners, K, dist, "IPPE", True, True, d.kpt_conf)
+            seed_rt = (seed["R"], seed["tvec"]) if seed is not None else None
+            sol = solve_upright(corners, down_cam, K, half, weights=d.kpt_conf, seed_rt=seed_rt)
             if sol is not None:
                 cov4 = pose_covariance(sol["center"], sol["psi"], down_cam, K, half, sig)
                 gd.center_cam = sol["center"]
