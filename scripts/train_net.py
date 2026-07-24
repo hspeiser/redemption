@@ -67,6 +67,8 @@ class GateDataset(Dataset):
             gate_idx, next_gate = d["gate_idx"], d["next_gate_pos"]
             inner, outer = d["inner"], d["outer"]
             vis_inner, vis_outer = d["vis_inner"], d["vis_outer"]
+            pv_arr = d["pose_valid"] if "pose_valid" in d else \
+                np.ones(len(paths), np.float32)
             R = quat_to_R(d["quat"]).astype(np.float32)
             ig_by_frame = {}
             if "ignore_frame_idx" in d:
@@ -86,6 +88,7 @@ class GateDataset(Dataset):
                     "next_gate_pos": next_gate[i],
                     "inner": inner[i], "outer": outer[i],
                     "vis_inner": vis_inner[i], "vis_outer": vis_outer[i],
+                    "pv": float(pv_arr[i]),
                     "ignore": np.array(ig_by_frame.get(i, np.zeros((0, 4))),
                                        np.float32),
                 })
@@ -123,7 +126,7 @@ class GateDataset(Dataset):
         vis_inner = it["vis_inner"].copy()
         vis_outer = it["vis_outer"].copy()
         ignore_boxes = it["ignore"].copy()
-        pose_valid = 1.0
+        pose_valid = it.get("pv", 1.0)
 
         if self.train:
             # ---- zoom augmentation: big-gate views are rare in real data,
