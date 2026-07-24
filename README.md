@@ -28,6 +28,22 @@ DCL simulator over MAVLink + UDP camera stream.
 - IMU is noiseless (exact specific force/rates at ~120 Hz).
 - ODOMETRY velocity is body-frame; quaternion needs the Y-flip correction; validate attitude conventions on banked frames, never at rest (R == Rᵀ at yaw≈π).
 
+## State estimation (no odometry)
+
+`aigp/ekf.py` — 9-state error-state EKF: position/velocity/attitude from
+IMU propagation (~120 Hz) + tightly-coupled gate-corner pixel updates
+against the static map. No bias states (sim IMU is measured noiseless).
+IMU conventions determined empirically (`scripts/ekf_bringup.py`):
+gyro fully negated vs the corrected body frame, accel direct; IMU-only
+dead-reckoning drift ≈ 7.6 cm / 0.36° per 1.5 s of banked flight.
+
+`scripts/ekf_replay.py` — full-lap replay grading vs ground truth (used
+only for initialization + scoring): mid-race position 5–14 cm median /
+~0.3° attitude across full racing episodes, vision+IMU only. Includes
+covariance-adaptive corner association and lost-mode relocalization
+(pose-head prior + joint PnP re-seed). Known limits: multi-second
+look-away vision gaps degrade until relocalization fires.
+
 ## Training
 
 `scripts/train_net.py` — from-scratch recipe: 45 epochs, batch 16, lr 3e-4
