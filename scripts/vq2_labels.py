@@ -40,7 +40,8 @@ def unique_frames(ep):
     """Unique frame jpgs (the recorder writes duplicate frame_ids)."""
     fj = ep / "frames.jsonl"
     if not fj.exists():
-        return sorted((ep / "frames").glob("*.jpg"))
+        sub = sorted((ep / "frames").glob("*.jpg"))
+        return sub if sub else sorted(ep.glob("*.jpg"))
     rows, seen = [], set()
     with open(fj) as fh:
         for line in fh:
@@ -148,12 +149,27 @@ def main():
                 x0, y0 = d["outer"].min(0) - 14
                 x1, y1 = d["outer"].max(0) + 14
                 boxes.append((x0, y0, x1, y1))
+            # net-native proposals from hole-diagonal peak pairs: catches
+            # CLOSE gates the classical detector misses (bloom/partial),
+            # so close views stop being systematically unlabeled
+            for (ca, cb) in ((0, 2), (1, 3)):
+                for (ua, va, _sa) in sorted(peaks[ca],
+                                            key=lambda q: -q[2])[:3]:
+                    for (ub, vb, _sb) in sorted(peaks[cb],
+                                                key=lambda q: -q[2])[:3]:
+                        span = max(abs(ub - ua), abs(vb - va))
+                        if span < 24:
+                            continue
+                        cx0, cy0 = (ua + ub) / 2, (va + vb) / 2
+                        half = span * 1.15
+                        boxes.append((cx0 - half, cy0 - half,
+                                      cx0 + half, cy0 + half))
             if not boxes:
                 boxes.append((-1e9, -1e9, 1e9, 1e9))   # whole frame
             gates_f = []          # (inner4, outer4, vis8)
             ig_f = []
             used_pk = set()
-            for (x0, y0, x1, y1) in boxes[:6]:
+            for (x0, y0, x1, y1) in boxes[:12]:
                 idxs, uvs, keys = [], [], []
                 for c in range(8):
                     inb = [(u, v, sc) for (u, v, sc) in peaks[c]

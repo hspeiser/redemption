@@ -746,9 +746,27 @@ def main():
                         bx0, by0 = dd["outer"].min(0) - 14
                         bx1, by1 = dd["outer"].max(0) + 14
                         boxes_v.append((bx0, by0, bx1, by1))
+                    # net-native proposals: hole-diagonal peak pairs imply a
+                    # gate-sized box (classical bboxes miss CLOSE gates -
+                    # bloom/partial - so without these, near gates never
+                    # even get a lock attempt)
+                    for (ca, cb) in ((0, 2), (1, 3)):
+                        for (ua, va, sa) in sorted(
+                                peaks[ca], key=lambda q: -q[2])[:3]:
+                            for (ub, vb, sb) in sorted(
+                                    peaks[cb], key=lambda q: -q[2])[:3]:
+                                span = max(abs(ub - ua), abs(vb - va))
+                                if span < 24:
+                                    continue
+                                cx0 = (ua + ub) / 2
+                                cy0 = (va + vb) / 2
+                                half = span * 1.15   # panel ~1.8x hole
+                                boxes_v.append((cx0 - half, cy0 - half,
+                                                cx0 + half, cy0 + half))
                     if not boxes_v:
                         boxes_v.append((-1e9, -1e9, 1e9, 1e9))
-                    for (bx0, by0, bx1, by1) in boxes_v[:6]:
+                    drawn_c = []
+                    for (bx0, by0, bx1, by1) in boxes_v[:14]:
                         idxs, uvs = [], []
                         for c in range(8):
                             inb = [(u, v, sc) for (u, v, sc) in peaks[c]
@@ -759,9 +777,13 @@ def main():
                                 uvs.append([u, v])
                         if len(idxs) < 6:
                             continue
+                        cc0 = np.mean(uvs, axis=0)
+                        if any(np.hypot(*(cc0 - d0)) < 30 for d0 in drawn_c):
+                            continue
                         br = pnp_points_all(idxs, uvs, K)
                         if not br or br[0][2] > 1.5:
                             continue
+                        drawn_c.append(cc0)
                         R_v, t_v, rms_v = br[0]
                         obj_v = np.ascontiguousarray(OBJ8 @ RX90.T)
                         rvec_v, _ = cv2.Rodrigues(R_v @ RX90.T)
