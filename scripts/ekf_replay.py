@@ -37,6 +37,8 @@ def main():
     ap.add_argument("--episode", default="rc_20260723_022654")
     ap.add_argument("--ckpt", default=str(REPO / "data/models/gatenet_v6wsl_best.pt"))
     ap.add_argument("--assoc-px", type=float, default=40.0)
+    ap.add_argument("--video", default=None,
+                    help="write an MP4 visualizing the EKF state per frame")
     args = ap.parse_args()
 
     calib = load_calib(REPO / "data/calib/calib.json")
@@ -97,6 +99,13 @@ def main():
     p0, v0, q0, _ = gt_state(t0)
     ekf = GateEKF(K, calib["R_cb"], sigma_px=1.0)
     ekf.init_state(p0, v0, q0, t0)
+
+    vw = None
+    if args.video:
+        vw = cv2.VideoWriter(args.video, cv2.VideoWriter_fourcc(*"mp4v"),
+                             30.0, (W, H))
+    GATE_COLS = [(255, 0, 255), (255, 128, 0), (0, 200, 255),
+                 (128, 255, 0), (255, 0, 128), (0, 128, 255)]
 
     # ---- run
     errs = []       # (t, pos_err, att_err_deg, n_upd, gap_since_upd, verr)
@@ -161,6 +170,36 @@ def main():
                     if best is not None:
                         obs.append((Xw, np.array([best[1], best[2]])))
             n_upd += ekf.update_corners(obs)
+
+            if vw is not None:
+                vis = img.copy()
+                # gates projected from the EKF STATE (not per-frame solves)
+                for gi in range(len(gates)):
+                    col = GATE_COLS[gi % len(GATE_COLS)]
+                    for quad in (gate_world[gi][:4], gate_world[gi][4:]):
+                        pts = []
+                        ok_all = True
+                        for Xw in quad:
+                            uvp, Xc = ekf.predict_pixel(Xw)
+                            if uvp is None or abs(uvp[0]) > 4000:
+                                ok_all = False
+                                break
+                            pts.append(uvp)
+                        if ok_all:
+                            cv2.polylines(vis, [np.array(pts, np.int32)],
+                                          True, col, 2)
+                for (Xw, uv_m) in obs:
+                    cv2.circle(vis, (int(uv_m[0]), int(uv_m[1])), 3,
+                               (0, 255, 0), -1)
+                pg0, _, _, _ = gt_state(ts)
+                perr0 = np.linalg.norm(ekf.p - pg0)
+                sig0 = float(np.sqrt(max(np.trace(ekf.P[0:3, 0:3]), 0)))
+                cv2.putText(vis,
+                            f"EKF err {perr0*100:5.1f}cm  sigma {sig0*100:4.1f}cm  "
+                            f"fused {len(obs):2d} corners  t {ts-t0:5.1f}s",
+                            (6, H - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                            (255, 255, 255), 1)
+                vw.write(vis)
 
             # ---- lost-mode relocalization: long gap + nothing accepted,
             # but the net sees corners -> re-seed from pose-head prior +
