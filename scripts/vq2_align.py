@@ -424,6 +424,7 @@ def main():
             n_clean = 0
             clean_dets = []
             peaks = None
+            matched_g = {}
             sig_p = float(np.sqrt(max(np.trace(ekf.P[0:3, 0:3]), 0)))
             if net is not None and not args.pins_only:
                 peaks = net_peaks(img)
@@ -466,6 +467,7 @@ def main():
                         innovs.append(d0)
                     if cand_obs[pick]:
                         flip_votes.setdefault(gi, []).append(pick)
+                        matched_g[gi] = len(cand_obs[pick])
             for det in dets:
                 # gate sanity: concentric inner+outer with the spec area
                 # ratio ((1.35/0.75)^2 = 3.24) — kills the gold "Station"
@@ -733,7 +735,10 @@ def main():
                         col = (0, 255, 0) if c < 4 else (0, 255, 255)
                         for (u, v, s) in peaks[c]:
                             cv2.circle(vis, (int(u), int(v)), 3, col, -1)
-                for gi in range(len(gates)):
+                # draw ONLY gates the filter is corner-locked to right now
+                # (the full-map projection reads as garbage wherever the
+                # map is imperfect — earned wireframes only)
+                for gi in [g for g, nm in matched_g.items() if nm >= 4]:
                     pts = []
                     ok_all = True
                     for Xw in gate_world[gi][0:4]:
