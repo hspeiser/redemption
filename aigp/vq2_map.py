@@ -13,7 +13,12 @@ MAP_PATH = Path(r"C:\Users\henry\Downloads\gate_map.json")
 
 
 def load_vq2_map(anchor_t=(0, 0, 0), anchor_yaw_deg=0.0, path=MAP_PATH,
-                 mirror_e=False):
+                 mirror_e=False, gate_yaw_offset_deg=None):
+    """gate_yaw_offset_deg: if given, per-gate orientations use this offset
+    instead of anchor_yaw_deg (the map's yaw values and its position
+    constellation empirically do NOT share a frame — solve them separately:
+    positions from co-visible pair fits, orientation offset from the
+    observed start-gate yaw)."""
     """Returns gates in our standard format (pos = APERTURE CENTRE — note:
     unlike VQ1 broadcasts, no panel offset applies; use hole-centred local
     corner models directly).
@@ -22,6 +27,8 @@ def load_vq2_map(anchor_t=(0, 0, 0), anchor_yaw_deg=0.0, path=MAP_PATH,
     """
     m = json.loads(Path(path).read_text())
     Rz = Rotation.from_euler("z", anchor_yaw_deg, degrees=True)
+    yaw_off = anchor_yaw_deg if gate_yaw_offset_deg is None \
+        else gate_yaw_offset_deg
     gates = []
     for i, (p_rel, yaw) in enumerate(zip(m["gates_ring_center_NED_rel_spawn"],
                                          m["gate_yaw_deg"])):
@@ -30,7 +37,7 @@ def load_vq2_map(anchor_t=(0, 0, 0), anchor_yaw_deg=0.0, path=MAP_PATH,
             p_rel = p_rel * np.array([1.0, -1.0, 1.0])
             yaw = -yaw
         p_local = Rz.apply(p_rel) + np.asarray(anchor_t, float)
-        q = Rotation.from_euler("z", yaw + anchor_yaw_deg, degrees=True).as_quat()
+        q = Rotation.from_euler("z", yaw + yaw_off, degrees=True).as_quat()
         gates.append({
             "gate_id": i,
             "pos": [float(v) for v in p_local],   # aperture centre

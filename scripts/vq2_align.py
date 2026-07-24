@@ -91,6 +91,32 @@ def load_race_status(ep):
     return rows
 
 
+def pnp_points_all(idx, imgp, K, obj8=None):
+    """All refined IPPE branches for >=6 identified corners (indices into
+    the 8-corner model): [(R_g2c, t, rms), ...] sorted by rms."""
+    o8 = OBJ8 if obj8 is None else obj8
+    if len(idx) < 6:
+        return []
+    obj_p = np.ascontiguousarray(o8[list(idx)] @ RX90.T)
+    ip = np.ascontiguousarray(imgp, np.float64).reshape(-1, 1, 2)
+    try:
+        n, rvecs, tvecs, errs = cv2.solvePnPGeneric(
+            obj_p, ip, K, None, flags=cv2.SOLVEPNP_IPPE)
+    except cv2.error:
+        return []
+    out = []
+    for rvec, tvec in zip(rvecs, tvecs):
+        try:
+            rvec, tvec = cv2.solvePnPRefineLM(obj_p, ip, K, None, rvec, tvec)
+        except cv2.error:
+            continue
+        proj, _ = cv2.projectPoints(obj_p, rvec, tvec, K, None)
+        rms = float(np.sqrt(((proj - ip) ** 2).sum(axis=2).mean()))
+        R, _ = cv2.Rodrigues(rvec)
+        out.append((R @ RX90, tvec.ravel(), rms))
+    return sorted(out, key=lambda s: s[2])
+
+
 def pnp_gate_all(det, K):
     """All refined IPPE branches for an 8-corner detection:
     [(R_g2c, t, rms), ...] sorted by rms."""
@@ -155,6 +181,35 @@ def main():
                          "frame is E-flipped vs the sim world)")
     ap.add_argument("--dt-offset", type=float, default=0.0,
                     help="seconds added to camera timestamps (clock probe)")
+    ap.add_argument("--anchor-yaw", type=float, default=None,
+                    help="override the solved anchor yaw (deg), e.g. the "
+                         "pair-refined value from a previous pass")
+    ap.add_argument("--classical", action="store_true",
+                    help="use the classical detector instead of GateNet v6 "
+                         "corners for the EKF pass")
+    ap.add_argument("--ckpt", default=str(
+        REPO / "data/models/gatenet_v6wsl_best.pt"))
+    ap.add_argument("--dump-pairs", default=None,
+                    help="npz path: dump co-visible pair measurements "
+                         "(t, active_gate, dp_local, yawA, depths) for the "
+                         "measured-map builder")
+    ap.add_argument("--map-json", default=None,
+                    help="use a measured local-frame map (from "
+                         "vq2_build_map.py) instead of the anchored "
+                         "gate_map.json")
+    ap.add_argument("--write-corrected-map", default=None,
+                    help="after the run, apply median locked-state per-gate "
+                         "position corrections and write the map json here")
+    ap.add_argument("--yaw-flip", action="store_true",
+                    help="flip gate orientations 180 deg (front/back "
+                         "ambiguity of the spawn PnP)")
+    ap.add_argument("--decouple-yaw", action="store_true",
+                    help="gate orientations use the gate0-observed offset "
+                         "instead of the position anchor yaw")
+    ap.add_argument("--pins-only", action="store_true",
+                    help="disable corner updates; dense PnP pins + IMU "
+                         "dead-reckoning between them measure the map's "
+                         "gate-to-gate geometry -> anchor-yaw fit")
     args = ap.parse_args()
     args.mirror_e = not args.no_mirror
     ep = Path(args.episode_dir)
@@ -236,6 +291,12 @@ def main():
     spread_p = np.linalg.norm(P - p_med, axis=1)
     map_g0_yaw = -m0["gate_yaw_deg"][0] if args.mirror_e else m0["gate_yaw_deg"][0]
     a_yaw = yaw_med - map_g0_yaw
+    yaw_off_solved = a_yaw + (180.0 if args.yaw_flip else 0.0)
+    if args.anchor_yaw is not None:
+        print(f"anchor yaw OVERRIDE (positions): {a_yaw:.1f} -> "
+              f"{args.anchor_yaw:.1f} deg (gate orientations keep "
+              f"{yaw_off_solved:.1f})")
+        a_yaw = args.anchor_yaw
     anchor = {"anchor_t": [float(v) for v in p_med],
               "anchor_yaw_deg": float(a_yaw),
               "n_anchor_frames": len(sols),
@@ -251,8 +312,15 @@ def main():
           f"{anchor['pnp_rms_px']:.2f}px")
     (REPO / "data" / "vq2_anchor.json").write_text(json.dumps(anchor, indent=2))
 
-    gates = load_vq2_map(anchor["anchor_t"], anchor["anchor_yaw_deg"],
-                         mirror_e=args.mirror_e)
+    if args.map_json:
+        gates = json.loads(Path(args.map_json).read_text())["gates"]
+        print(f"measured map: {args.map_json} ({len(gates)} gates)")
+    else:
+        gates = load_vq2_map(anchor["anchor_t"], anchor["anchor_yaw_deg"],
+                             mirror_e=args.mirror_e,
+                             gate_yaw_offset_deg=(
+                                 yaw_off_solved if args.decouple_yaw
+                                 else None))
     gate_world = [np.concatenate(gate_quads_world_vq2(g)) for g in gates]
     gate_R = [Rotation.from_quat([g["quat_wxyz"][1], g["quat_wxyz"][2],
                                   g["quat_wxyz"][3], g["quat_wxyz"][0]]
@@ -283,9 +351,33 @@ def main():
                              len(rs_ag) - 1)])
 
     # ---------- EKF over the flight (classical corners) ----------
-    # classical corners on VQ2 neon gates are 5-15px noisy (bloom), nothing
-    # like GateNet's sub-pixel output — χ² gate must reflect that
-    ekf = GateEKF(K, R_cb, sigma_px=5.0)
+    # corner source: GateNet v6 (sub-pixel, transfers to VQ2) unless
+    # --classical. Classical corners on VQ2 neon gates are 5-15px noisy.
+    net = None
+    if not args.classical:
+        import torch
+        from aigp.vision.model import GateNet
+        from scripts.train_net import orange_channel, decode_corners
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        ck = torch.load(args.ckpt, map_location=dev, weights_only=False)
+        net = GateNet().to(dev)
+        net.load_state_dict(ck["model"])
+        net.eval()
+        print(f"GateNet corners: {Path(args.ckpt).name} "
+              f"(epoch {ck['epoch']}) on {dev}")
+
+        def net_peaks(bgr):
+            orange = orange_channel(bgr)
+            x = np.concatenate([bgr.astype(np.float32) / 255.0,
+                                orange[..., None]], 2).transpose(2, 0, 1)
+            xt = torch.from_numpy(x).unsqueeze(0).to(dev)
+            with torch.no_grad(), torch.autocast(
+                    "cuda", dtype=torch.float16, enabled=dev == "cuda"):
+                o = net(xt)
+            return decode_corners(o["hm"][0].float().cpu(),
+                                  o["off"][0].float().cpu(), thresh=0.25)
+
+    ekf = GateEKF(K, R_cb, sigma_px=1.5 if net is not None else 5.0)
     q0 = R0.as_quat()
     ekf.init_state(np.zeros(3), np.zeros(3),
                    [q0[3], q0[0], q0[1], q0[2]], t_start)
@@ -293,9 +385,20 @@ def main():
                          (W, H)) if args.video else None
 
     fi = 0
+    # map-independent attitude reference for the pair measurement: pure
+    # gyro integration from the rest attitude (sim gyro is noiseless)
+    R_gyro = R0.as_matrix().copy()
+    t_gyro = None
     stats = []   # (t, n_fused, innov_rms, sigma_p, n_clean)
-    relocs = []  # (t, gate, att_angle_deg, pnp_rms)
+    relocs = []  # (t, gate, att_angle_deg, pnp_rms, p_before, p_new)
+    last_pin = None  # (t, gate, p_new) for pin-pair velocity fixes
     edge_checks = []  # (t, pinned_gate, other_gate, pixel_err)
+    pair_rows = []   # (t, active_gate, dp_local A->B)
+    yaw_rows = []    # (gate_id, observed local yaw deg)
+    assoc_errs = []  # uncapped nearest-gate pixel error per clean-det frame
+    lock_gate = None      # gate currently hard-locked (sigma small)
+    edge_resid = {}       # (locked_gate, next_gate) -> list of 3D offsets
+    flip_votes = {}       # gate -> list of bool (matched better 180-flipped)
     last_upd = t_start
     prev_t = None
     for i in range(len(imu)):
@@ -303,6 +406,11 @@ def main():
         if prev_t is not None and t_imu - prev_t > 1.5:
             print(f"[data hole at t={t_imu - t_start:.1f}s]", flush=True)
         prev_t = t_imu
+        if t_gyro is not None and 0 < t_imu - t_gyro < 0.5:
+            w_b = imu[i, 4:7] * np.asarray(GateEKF.GYRO_SIGN)
+            R_gyro = R_gyro @ Rotation.from_rotvec(
+                w_b * (t_imu - t_gyro)).as_matrix()
+        t_gyro = t_imu
         ekf.propagate(t_imu, imu[i, 1:4], imu[i, 4:7])
         while fi < len(frames) and frames[fi][0] <= t_imu:
             ts, path = frames[fi]
@@ -315,7 +423,49 @@ def main():
             innovs = []
             n_clean = 0
             clean_dets = []
+            peaks = None
             sig_p = float(np.sqrt(max(np.trace(ekf.P[0:3, 0:3]), 0)))
+            if net is not None and not args.pins_only:
+                peaks = net_peaks(img)
+                if any(len(peaks[c]) for c in range(8)):
+                    n_clean = 1
+                ag_n = active_gate(t_imu)
+                rad_n = float(np.clip(3 * K[0, 0] * sig_p / 6.0 + 20,
+                                      25, 120))
+                FLIP = (1, 0, 3, 2, 5, 4, 7, 6)   # gate rotated 180 deg
+                for gi in [g for g in (ag_n - 1, ag_n, ag_n + 1)
+                           if 0 <= g < len(gates)]:
+                    # some map gates are 180-flipped (spline heading vs
+                    # facing): match under both orientations, keep better
+                    cand_obs = {False: [], True: []}
+                    cand_cost = {False: 0.0, True: 0.0}
+                    for flip in (False, True):
+                        for k in range(8):
+                            Xw = gate_world[gi][FLIP[k] if flip else k]
+                            uvp, Xc = ekf.predict_pixel(Xw)
+                            if uvp is None:
+                                continue
+                            best_pk = None
+                            for (u, v, s) in peaks[k]:
+                                d = float(np.hypot(u - uvp[0], v - uvp[1]))
+                                if d < rad_n and (best_pk is None
+                                                  or d < best_pk[0]):
+                                    best_pk = (d, u, v)
+                            if best_pk is not None:
+                                cand_obs[flip].append(
+                                    (Xw, np.array(best_pk[1:]),
+                                     best_pk[0]))
+                                cand_cost[flip] += best_pk[0]
+                    pick = False
+                    if len(cand_obs[True]) > len(cand_obs[False]) or (
+                            len(cand_obs[True]) == len(cand_obs[False])
+                            and cand_cost[True] < cand_cost[False]):
+                        pick = True
+                    for (Xw, uv0, d0) in cand_obs[pick]:
+                        obs.append((Xw, uv0))
+                        innovs.append(d0)
+                    if cand_obs[pick]:
+                        flip_votes.setdefault(gi, []).append(pick)
             for det in dets:
                 # gate sanity: concentric inner+outer with the spec area
                 # ratio ((1.35/0.75)^2 = 3.24) — kills the gold "Station"
@@ -334,6 +484,9 @@ def main():
                          ("inner", det["inner"], 0)]
                 n_clean += 1
                 clean_dets.append(det)
+                if net is not None:
+                    continue      # net supplies the update corners; the
+                                  # classical det is kept for reloc only
                 dc = det["outer"].mean(0)
                 # nearest predicted gate among race-status candidates
                 ag = active_gate(t_imu)
@@ -366,6 +519,106 @@ def main():
                         if dists[j] < 60:
                             obs.append((world4[k], quad_px[j]))
                             innovs.append(dists[j])
+            # global map-fit metric: uncapped distance from the biggest clean
+            # detection to the nearest predicted gate centre (any gate)
+            if clean_dets:
+                dbig = max(clean_dets, key=lambda d0: -0 + d0["area"])
+                dcb = dbig["outer"].mean(0)
+                emin = None
+                for gi2 in range(len(gates)):
+                    uvp2, _ = ekf.predict_pixel(np.asarray(gates[gi2]["pos"]))
+                    if uvp2 is None:
+                        continue
+                    e2 = float(np.hypot(uvp2[0] - dcb[0], uvp2[1] - dcb[1]))
+                    if emin is None or e2 < emin:
+                        emin = e2
+                if emin is not None:
+                    assoc_errs.append(emin)
+
+            # next-gate first-sight residual: while hard-locked (small sigma,
+            # belief pinned to the active gate), PnP any OTHER clean det ->
+            # measured world position vs map = per-edge map correction
+            if net is not None and peaks is not None and sig_p < 0.35 \
+                    and clean_dets:
+                agl = active_gate(t_imu)
+                R_wc_l = ekf.q.as_matrix() @ R_cb.T
+                for dd in clean_dets:
+                    x0, y0 = dd["outer"].min(0) - 12
+                    x1, y1 = dd["outer"].max(0) + 12
+                    idxs, uvs = [], []
+                    for c in range(8):
+                        inb = [(u, v, sc) for (u, v, sc) in peaks[c]
+                               if x0 <= u <= x1 and y0 <= v <= y1]
+                        if inb:
+                            u, v, _ = max(inb, key=lambda p0: p0[2])
+                            idxs.append(c)
+                            uvs.append([u, v])
+                    if len(idxs) < 6:
+                        continue
+                    br = pnp_points_all(idxs, uvs, K)
+                    if not br or br[0][2] > 1.0:
+                        continue
+                    p_meas = ekf.p + R_wc_l @ br[0][1]
+                    ds = [np.linalg.norm(
+                        p_meas - np.asarray(gates[gj]["pos"]))
+                        for gj in range(len(gates))]
+                    gj = int(np.argmin(ds))
+                    if ds[gj] < 10.0:
+                        edge_resid.setdefault((agl, gj), []).append(
+                            p_meas - np.asarray(gates[gj]["pos"]))
+
+            # convention-neutral pair measurement: PnP two co-visible gates
+            # independently -> gate->gate vector in the local frame (drone
+            # pose cancels; only belief ATTITUDE is used, which is gyro-
+            # driven and map-independent). Branch picked by rms ratio test.
+            if len(clean_dets) >= 2:
+                dsort2 = sorted(clean_dets, key=lambda d0: -d0["area"])[:2]
+                sols2 = []
+                for dd in dsort2:
+                    if net is not None and peaks is not None:
+                        # sub-pixel: strongest net peak per class inside the
+                        # classical det's bbox (spatial grouping by the det)
+                        x0, y0 = dd["outer"].min(0) - 12
+                        x1, y1 = dd["outer"].max(0) + 12
+                        idxs, uvs = [], []
+                        for c in range(8):
+                            inb = [(u, v, sc) for (u, v, sc) in peaks[c]
+                                   if x0 <= u <= x1 and y0 <= v <= y1]
+                            if inb:
+                                u, v, _ = max(inb, key=lambda p0: p0[2])
+                                idxs.append(c)
+                                uvs.append([u, v])
+                        br = pnp_points_all(idxs, uvs, K) \
+                            if len(idxs) >= 6 else []
+                        sols2.append(br[0] if br and br[0][2] < 1.0
+                                     else None)
+                    else:
+                        br = [s for s in pnp_gate_all(dd, K) if s[2] < 3.0]
+                        if not br or (len(br) > 1
+                                      and br[1][2] < 1.2 * br[0][2]):
+                            sols2.append(None)
+                        else:
+                            sols2.append(br[0])
+                if all(s is not None for s in sols2):
+                    R_wc_b = R_gyro @ R_cb.T
+                    pA = R_wc_b @ sols2[0][1]
+                    pB = R_wc_b @ sols2[1][1]
+                    RA = R_wc_b @ sols2[0][0]
+                    RB = R_wc_b @ sols2[1][0]
+                    ag2 = active_gate(t_imu)
+                    pair_rows.append((
+                        t_imu - t_start, ag2, pB - pA,
+                        float(np.degrees(np.arctan2(RA[1, 0], RA[0, 0]))),
+                        float(np.degrees(np.arctan2(RB[1, 0], RB[0, 0]))),
+                        float(np.linalg.norm(sols2[0][1])),
+                        float(np.linalg.norm(sols2[1][1]))))
+                # per-gate yaw observation for the biggest det (identity =
+                # active gate), same ratio test
+                if sols2[0] is not None:
+                    R_g0_obs = (R_gyro @ R_cb.T) @ sols2[0][0]
+                    yaw_rows.append((active_gate(t_imu), np.degrees(
+                        np.arctan2(R_g0_obs[1, 0], R_g0_obs[0, 0]))))
+
             # filter-independent map-edge check: pose from the active gate's
             # own PnP, then see where the map puts the OTHER co-visible
             # detection. Validates gate-to-gate map geometry directly.
@@ -407,20 +660,35 @@ def main():
                             edge_checks.append((t_imu - t_start, ag, best_g,
                                                 best_e))
 
+            if args.pins_only:
+                obs = []
             n = ekf.update_corners(obs)
             if n:
                 last_upd = t_imu
-            elif clean_dets and (t_imu - last_upd) > 0.8:
+            elif (clean_dets or n_clean) and (t_imu - last_upd) > (
+                    0.3 if args.pins_only else 0.5):
                 # lost -> PnP-relocalize against the race-status active gate;
                 # branch/back-face disambiguated by attitude agreement (the
-                # gyro is noiseless, so belief attitude is trustworthy)
-                det = max(clean_dets, key=lambda d0: d0["area"])
+                # gyro is noiseless, so belief attitude is trustworthy).
+                # Prefer a classical detection (spatially segmented, so no
+                # cross-gate corner mixing); fall back to strongest net peaks.
+                if clean_dets:
+                    det = max(clean_dets, key=lambda d0: d0["area"])
+                    branches = pnp_gate_all(det, K)
+                elif net is not None:
+                    cd = {c: max(peaks[c], key=lambda p0: p0[2])[:2]
+                          for c in range(8) if peaks[c]}
+                    branches = pnp_points_all(
+                        sorted(cd), [cd[k] for k in sorted(cd)], K) \
+                        if len(cd) >= 6 else []
+                else:
+                    branches = []
                 ag = active_gate(t_imu)
                 Rb = ekf.q.as_matrix()
-                best = None
+                cands_r = []
                 for gi in [g for g in (ag, ag + 1, ag - 1)
                            if 0 <= g < len(gates)]:
-                    for (R_g2c, t_pnp, rms) in pnp_gate_all(det, K):
+                    for (R_g2c, t_pnp, rms) in branches:
                         if rms > 3.0:
                             continue
                         R_wb = gate_R[gi] @ R_g2c.T @ R_cb
@@ -430,15 +698,30 @@ def main():
                             continue
                         p_new = np.asarray(gates[gi]["pos"]) - \
                             gate_R[gi] @ (R_g2c.T @ t_pnp)
-                        if best is None or ang < best[1]:
-                            best = (p_new, ang, gi, rms)
+                        jump = float(np.linalg.norm(p_new - ekf.p))
+                        cands_r.append((p_new, ang, gi, rms, jump))
+                # gate identity by position-jump plausibility: dead-reckon
+                # drift over the vision gap is cm-scale, wrong-gate
+                # candidates jump the inter-gate distance (metres)
+                gap = t_imu - last_upd
+                jmax = 1.0 + 0.6 * gap
+                ok_j = [c for c in cands_r if c[4] < jmax]
+                pool = ok_j if ok_j else (cands_r if gap > 3.0 else [])
+                best = min(pool, key=lambda c: c[1]) if pool else None
                 if best is not None:
                     q = ekf.q.as_quat()
-                    ekf.init_state(best[0], ekf.v,
+                    p_before = ekf.p.copy()
+                    # same-gate pin pair within 0.7s -> direct velocity fix
+                    v_new = ekf.v
+                    if last_pin is not None and last_pin[1] == best[2] and \
+                            0.05 < t_imu - last_pin[0] < 0.7:
+                        v_new = (best[0] - last_pin[2]) / (t_imu - last_pin[0])
+                    last_pin = (t_imu, best[2], best[0].copy())
+                    ekf.init_state(best[0], v_new,
                                    [q[3], q[0], q[1], q[2]], t_imu,
                                    pos_std=0.4, vel_std=0.8, ang_std=0.03)
                     relocs.append((t_imu - t_start, best[2], best[1],
-                                   best[3]))
+                                   best[3], p_before, best[0].copy()))
                     last_upd = t_imu
             stats.append((t_imu - t_start, n,
                           float(np.sqrt(np.mean(np.square(innovs)))) if innovs
@@ -464,6 +747,74 @@ def main():
                 vw.write(vis)
     if vw is not None:
         vw.release()
+
+    # ---------- convention + anchor-yaw refinement from co-visible pairs ----
+    # each pair row is a gate->gate vector measured in the local frame with
+    # the drone pose cancelled. For each map convention, every row implies an
+    # anchor yaw; the correct convention clusters tightly and its circular
+    # median IS the refined anchor yaw (immune to gate0's weak single-PnP yaw)
+    print(f"\npair rows: {len(pair_rows)}, yaw rows: {len(yaw_rows)}")
+    if args.dump_pairs and pair_rows:
+        np.savez(args.dump_pairs, rows=np.array(
+            [[t0, a0, d0[0], d0[1], d0[2], ya, yb, da, db]
+             for (t0, a0, d0, ya, yb, da, db) in pair_rows]))
+        print(f"dumped {len(pair_rows)} pair rows -> {args.dump_pairs}")
+    if pair_rows:
+        rel_raw = np.asarray(m0["gates_ring_center_NED_rel_spawn"], float)
+        yaws_raw = np.asarray(m0["gate_yaw_deg"], float)
+
+        def wrap(a):
+            return (np.asarray(a) + 180.0) % 360.0 - 180.0
+
+        print(f"\npair rows: {len(pair_rows)}, yaw rows: {len(yaw_rows)}")
+        for label, mir in (("as-is", False), ("MIRROR", True)):
+            rel_c = rel_raw * (np.array([1, -1, 1]) if mir else 1)
+            implied = []
+            for (_t, ag2, dp, *_rest) in pair_rows:
+                d_obs = np.linalg.norm(dp)
+                if d_obs < 3.0:
+                    continue
+                # the bigger det (A) is the race-status active gate; only
+                # the identity of B is open — no ordering ambiguity
+                cands = []
+                i = ag2
+                for j in range(max(0, ag2 - 1), min(len(rel_c), ag2 + 3)):
+                    if i == j:
+                        continue
+                    dm = rel_c[j] - rel_c[i]
+                    if abs(np.linalg.norm(dm) - d_obs) < max(
+                            0.10 * d_obs, 0.6):
+                        cands.append(np.degrees(
+                            np.arctan2(dp[1], dp[0]) -
+                            np.arctan2(dm[1], dm[0])))
+                for a in cands:
+                    implied.append((a, 1.0 / len(cands)))
+            if not implied:
+                print(f"  {label}: no distance-matched pairs")
+                continue
+            ang = np.radians([a for a, _w in implied])
+            w = np.array([wgt for _a, wgt in implied])
+            mean_a = np.degrees(np.arctan2((w * np.sin(ang)).sum(),
+                                           (w * np.cos(ang)).sum()))
+            dev = np.abs(wrap([np.degrees(x) - mean_a for x in ang]))
+            order = np.argsort(dev)
+            cum = np.cumsum(w[order]) / w.sum()
+            mad = float(dev[order][np.searchsorted(cum, 0.5)])
+            frac10 = float(w[dev < 10].sum() / w.sum())
+            print(f"  {label}: n={len(implied)}  anchor-yaw mean "
+                  f"{mean_a:+7.2f} deg  MAD {mad:5.2f} deg  "
+                  f"within10deg {100*frac10:.0f}%")
+            # per-gate yaw observations under this convention
+            ya = wrap([yo - (-y if mir else y)
+                       for (g, yo) in yaw_rows
+                       for y in [yaws_raw[g]]])
+            if len(ya):
+                yv = np.radians(ya)
+                ymean = np.degrees(np.arctan2(np.sin(yv).mean(),
+                                              np.cos(yv).mean()))
+                ymad = float(np.median(np.abs(wrap(ya - ymean))))
+                print(f"           gate-yaw rows: mean {ymean:+7.2f} deg  "
+                      f"MAD {ymad:5.2f} deg")
 
     s = np.array(stats)
     upd = s[:, 1] > 0
@@ -493,10 +844,83 @@ def main():
         for (a, b), es in sorted(pairs.items()):
             print(f"    gate {a:2d} -> {b:2d}: n={len(es):3d} "
                   f"median {np.median(es):6.1f}px")
+    if assoc_errs:
+        ae = np.array(assoc_errs)
+        print(f"assoc err (uncapped nearest-gate px, n={len(ae)}): "
+              f"median {np.median(ae):.1f}  p75 {np.percentile(ae,75):.1f}  "
+              f"<40px {100*(ae<40).mean():.0f}%")
+    if edge_resid:
+        print("\nlocked-state map residuals (measured - map, per gate):")
+        for (i, j), offs in sorted(edge_resid.items()):
+            offs = np.asarray(offs)
+            med = np.median(offs, axis=0)
+            print(f"  lock g{i:2d} sees g{j:2d}: n={len(offs):3d}  "
+                  f"off {np.round(med, 2)}  |off| {np.linalg.norm(med):5.2f}m")
+    if flip_votes:
+        print("per-gate 180-flip votes (fraction matched better flipped):")
+        for g, vs in sorted(flip_votes.items()):
+            print(f"  g{g:2d}: {100*np.mean(vs):3.0f}% of {len(vs)}")
+    if args.write_corrected_map:
+        corr = {}
+        for (_i, j), offs in edge_resid.items():
+            corr.setdefault(j, []).extend(offs)
+        n_corr = 0
+        for j, offs in corr.items():
+            if len(offs) < 5:
+                continue
+            med = np.median(np.asarray(offs), axis=0)
+            if np.linalg.norm(med) < 6.0:
+                gates[j]["pos"] = [float(v) for v in
+                                   np.asarray(gates[j]["pos"]) + med]
+                n_corr += 1
+        Path(args.write_corrected_map).write_text(json.dumps(
+            {"frame": "local spawn frame", "gates": gates}, indent=1))
+        print(f"corrected map ({n_corr} gates nudged) -> "
+              f"{args.write_corrected_map}")
     print(f"relocalizations: {len(relocs)}")
-    for (tr, gi, ang, rms) in relocs[:40]:
+    for (tr, gi, ang, rms, _pb, _pn) in relocs[:60]:
         print(f"  t {tr:5.1f}s -> gate {gi:2d}  att-agree {ang:4.1f}deg  "
               f"pnp {rms:.2f}px")
+
+    # pin-chain anchor-yaw fit: dead-reckoned displacement between
+    # consecutive pins vs the map's gate-to-gate vector
+    if len(relocs) >= 2:
+        edges = []
+        for k in range(len(relocs) - 1):
+            t0r, g0r, _a0, _r0, _pb0, pn0 = relocs[k]
+            t1r, g1r, _a1, _r1, pb1, _pn1 = relocs[k + 1]
+            dt = t1r - t0r
+            if dt > 6.0 or g0r == g1r:
+                continue
+            d_meas = pb1 - pn0
+            d_map = np.asarray(gates[g1r]["pos"]) - \
+                np.asarray(gates[g0r]["pos"])
+            if np.linalg.norm(d_map[:2]) < 2.0:
+                continue
+            dyaw = np.degrees(np.arctan2(d_meas[1], d_meas[0]) -
+                              np.arctan2(d_map[1], d_map[0]))
+            dyaw = (dyaw + 180) % 360 - 180
+            L_map = float(np.linalg.norm(d_map))
+            dlen = np.linalg.norm(d_meas) - L_map
+            # rotation preserves length: an edge whose measured length
+            # disagrees with the map is a broken pin/velocity, not yaw info
+            if abs(dlen) > max(1.5, 0.10 * L_map):
+                continue
+            edges.append((g0r, g1r, dyaw, dlen, dt, L_map))
+        if edges:
+            print("\npin-chain edges (measured vs map):")
+            for (g0r, g1r, dyaw, dlen, dt, L) in edges:
+                print(f"  g{g0r:2d}->g{g1r:2d}  L={L:5.1f}m  dt={dt:4.1f}s  "
+                      f"dyaw {dyaw:+6.2f}deg  dlen {dlen:+5.2f}m")
+            w = np.array([e[5] / max(e[4], 0.5) for e in edges])
+            dy = np.radians([e[2] for e in edges])
+            fit = np.degrees(np.arctan2((w * np.sin(dy)).sum(),
+                                        (w * np.cos(dy)).sum()))
+            cur = anchor["anchor_yaw_deg"] if args.anchor_yaw is None \
+                else args.anchor_yaw
+            print(f"pin-chain yaw correction: {fit:+.2f} deg "
+                  f"(n={len(edges)}) -> suggested --anchor-yaw "
+                  f"{cur + fit:.2f}")
     return 0
 
 
