@@ -467,7 +467,8 @@ def main():
                         innovs.append(d0)
                     if cand_obs[pick]:
                         flip_votes.setdefault(gi, []).append(pick)
-                        matched_g[gi] = len(cand_obs[pick])
+                        matched_g[gi] = (len(cand_obs[pick]),
+                                         cand_cost[pick])
             for det in dets:
                 # gate sanity: concentric inner+outer with the spec area
                 # ratio ((1.35/0.75)^2 = 3.24) — kills the gold "Station"
@@ -735,21 +736,53 @@ def main():
                         col = (0, 255, 0) if c < 4 else (0, 255, 255)
                         for (u, v, s) in peaks[c]:
                             cv2.circle(vis, (int(u), int(v)), 3, col, -1)
-                # draw ONLY gates the filter is corner-locked to right now
-                # (the full-map projection reads as garbage wherever the
-                # map is imperfect — earned wireframes only)
-                for gi in [g for g, nm in matched_g.items() if nm >= 4]:
-                    pts = []
-                    ok_all = True
-                    for Xw in gate_world[gi][0:4]:
-                        uvp, _ = ekf.predict_pixel(Xw)
-                        if uvp is None or abs(uvp[0]) > 4000:
-                            ok_all = False
-                            break
-                        pts.append(uvp)
-                    if ok_all:
-                        cv2.polylines(vis, [np.array(pts, np.int32)], True,
-                                      (0, 255, 0), 2)
+                # MEASURED wireframes only: per detection region, PnP the
+                # net corners against the rigid gate; draw the reprojected
+                # quad only if the fit is tight. Nothing drawn from belief
+                # or map -> no floating/ghost gates possible.
+                if peaks is not None:
+                    boxes_v = []
+                    for dd in dets:
+                        bx0, by0 = dd["outer"].min(0) - 14
+                        bx1, by1 = dd["outer"].max(0) + 14
+                        boxes_v.append((bx0, by0, bx1, by1))
+                    if not boxes_v:
+                        boxes_v.append((-1e9, -1e9, 1e9, 1e9))
+                    for (bx0, by0, bx1, by1) in boxes_v[:6]:
+                        idxs, uvs = [], []
+                        for c in range(8):
+                            inb = [(u, v, sc) for (u, v, sc) in peaks[c]
+                                   if bx0 <= u <= bx1 and by0 <= v <= by1]
+                            if inb:
+                                u, v, _ = max(inb, key=lambda q: q[2])
+                                idxs.append(c)
+                                uvs.append([u, v])
+                        if len(idxs) < 6:
+                            continue
+                        br = pnp_points_all(idxs, uvs, K)
+                        if not br or br[0][2] > 1.5:
+                            continue
+                        R_v, t_v, rms_v = br[0]
+                        obj_v = np.ascontiguousarray(OBJ8 @ RX90.T)
+                        rvec_v, _ = cv2.Rodrigues(R_v @ RX90.T)
+                        pr8, _ = cv2.projectPoints(
+                            obj_v, rvec_v, t_v.reshape(3, 1), K, None)
+                        pr8 = pr8.reshape(8, 2)
+                        good = len(idxs) >= 7 and rms_v < 0.8
+                        col = (0, 255, 0) if good else (0, 200, 255)
+                        for quad in (pr8[0:4], pr8[4:8]):
+                            cv2.polylines(vis, [quad.astype(np.int32)],
+                                          True, col, 2)
+                        dist = float(np.linalg.norm(t_v))
+                        bear = float(np.degrees(
+                            np.arctan2(t_v[0], t_v[2])))
+                        top = pr8[np.argmin(pr8[:, 1])]
+                        cv2.putText(
+                            vis, f"{dist:4.1f}m {bear:+3.0f}deg "
+                            f"{len(idxs)}/8 {rms_v:.1f}px",
+                            (int(np.clip(top[0] - 55, 4, W - 175)),
+                             int(np.clip(top[1] - 8, 14, H - 6))),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, col, 1)
                 cv2.putText(vis, f"t {ts - t_start:5.1f}s fused {n:2d} "
                             f"sigma {sig_p*100:5.1f}cm",
                             (6, H - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
