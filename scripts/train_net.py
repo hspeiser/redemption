@@ -24,7 +24,9 @@ from aigp.vision.model import GateNet, rot6d_to_matrix, focal_heatmap_loss
 W, H = 640, 360
 HW, HH = W // 4, H // 4          # heatmap size 160 x 90
 POS_SCALE, VEL_SCALE = 50.0, 20.0
-VAL_EPISODES = ("rc_20260723_024016", "rc_20260723_022140", "rc_20260723_022654")
+VAL_EPISODES = ("rc_20260723_024016", "rc_20260723_022140",
+                "rc_20260723_022654",
+                "rc_20260724_003101")   # VQ2 holdout (full fast lap)
 
 
 def quat_to_R(q_wxyz):

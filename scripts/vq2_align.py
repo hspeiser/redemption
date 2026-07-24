@@ -728,6 +728,11 @@ def main():
                           else np.nan, sig_p, n_clean))
             if vw is not None:
                 vis = img.copy()
+                if peaks is not None:      # raw net corner detections
+                    for c in range(8):
+                        col = (0, 255, 0) if c < 4 else (0, 255, 255)
+                        for (u, v, s) in peaks[c]:
+                            cv2.circle(vis, (int(u), int(v)), 3, col, -1)
                 for gi in range(len(gates)):
                     pts = []
                     ok_all = True
