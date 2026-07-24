@@ -1,0 +1,6 @@
+.venv/
+.venv-train/
+__pycache__/
+*.pyc
+data/
+*.egg-info/
