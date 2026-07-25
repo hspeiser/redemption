@@ -189,6 +189,11 @@ def main():
                          "corners for the EKF pass")
     ap.add_argument("--ckpt", default=str(
         REPO / "data/models/gatenet_v6wsl_best.pt"))
+    ap.add_argument("--label-dump", default=None,
+                    help="npz path: temporal-transfer labels — while the "
+                         "EKF is locked on an actively-fused gate, project "
+                         "its corners every frame (incl. close/partial "
+                         "views the geometric verifier cannot certify)")
     ap.add_argument("--dump-pairs", default=None,
                     help="npz path: dump co-visible pair measurements "
                          "(t, active_gate, dp_local, yawA, depths) for the "
@@ -399,6 +404,8 @@ def main():
     lock_gate = None      # gate currently hard-locked (sigma small)
     edge_resid = {}       # (locked_gate, next_gate) -> list of 3D offsets
     flip_votes = {}       # gate -> list of bool (matched better 180-flipped)
+    last_fuse = {}        # gate -> last time its corners were fused
+    tl_rows = []          # temporal-transfer label rows
     last_upd = t_start
     prev_t = None
     for i in range(len(imu)):
@@ -668,7 +675,68 @@ def main():
             n = ekf.update_corners(obs)
             if n:
                 last_upd = t_imu
-            elif (clean_dets or n_clean) and (t_imu - last_upd) > (
+                for gi_f in matched_g:
+                    last_fuse[gi_f] = t_imu
+
+            # temporal-transfer labels: gates actively fused moments ago
+            # keep exact relative pose through the approach/pass — label
+            # their projected corners even when few are visible
+            if args.label_dump and sig_p < 0.15 and peaks is not None:
+                FLIP_L = (1, 0, 3, 2, 5, 4, 7, 6)
+                gates_lab = []
+                for gi_l, t_f in last_fuse.items():
+                    if t_imu - t_f > 0.35:
+                        continue
+                    flip_l = bool(flip_votes.get(gi_l)) and \
+                        np.mean(flip_votes[gi_l]) > 0.5
+                    uv8 = np.full((8, 2), np.nan, np.float32)
+                    vis8 = np.zeros(8, bool)
+                    n_in = 0
+                    n_snap = 0
+                    for k in range(8):
+                        Xw = gate_world[gi_l][FLIP_L[k] if flip_l else k]
+                        uvp, Xc0 = ekf.predict_pixel(Xw)
+                        if uvp is None or Xc0[2] < 0.25:
+                            continue
+                        # snap to a same-class net peak when one is close
+                        best_s = None
+                        for (u, v, s0) in peaks[k]:
+                            d0 = float(np.hypot(u - uvp[0], v - uvp[1]))
+                            if d0 < 16 and (best_s is None
+                                            or d0 < best_s[0]):
+                                best_s = (d0, u, v)
+                        uv = np.array(best_s[1:]) if best_s else uvp
+                        if best_s is not None:
+                            n_snap += 1
+                        uv8[k] = uv
+                        inb = (-40 <= uv[0] < W + 40 and
+                               -30 <= uv[1] < H + 30)
+                        vis8[k] = inb
+                        n_in += int(inb)
+                    # this-frame corroboration: the projection must agree
+                    # with live net evidence, or it does not become a label
+                    # (post-fuse drift was producing floating labels)
+                    ok_lab = n_in >= 2 and (
+                        n_snap >= 2 or
+                        (n_snap >= 1 and t_imu - t_f < 0.12))
+                    if ok_lab:
+                        gates_lab.append((gi_l, uv8, vis8))
+                if gates_lab:
+                    igs = []
+                    for dd in clean_dets:
+                        dc0 = dd["outer"].mean(0)
+                        near = any(
+                            np.isfinite(uv8).all(axis=1).any() and
+                            np.nanmin(np.linalg.norm(
+                                uv8 - dc0, axis=1)) < 60
+                            for (_g, uv8, _v) in gates_lab)
+                        if not near:
+                            x0, y0 = dd["outer"].min(0) - 12
+                            x1, y1 = dd["outer"].max(0) + 12
+                            igs.append([max(x0, 0), max(y0, 0),
+                                        min(x1, W), min(y1, H)])
+                    tl_rows.append((str(path), gates_lab[:3], igs))
+            if (not n) and (clean_dets or n_clean) and (t_imu - last_upd) > (
                     0.3 if args.pins_only else 0.5):
                 # lost -> PnP-relocalize against the race-status active gate;
                 # branch/back-face disambiguated by attitude agreement (the
@@ -942,6 +1010,40 @@ def main():
             {"frame": "local spawn frame", "gates": gates}, indent=1))
         print(f"corrected map ({n_corr} gates nudged) -> "
               f"{args.write_corrected_map}")
+    if args.label_dump and tl_rows:
+        GS = 3
+        n_r = len(tl_rows)
+        arr_i = np.full((n_r, GS, 4, 2), np.nan, np.float32)
+        arr_o = np.full((n_r, GS, 4, 2), np.nan, np.float32)
+        v_i = np.zeros((n_r, GS, 4), bool)
+        v_o = np.zeros((n_r, GS, 4), bool)
+        paths_r, ig_b, ig_f = [], [], []
+        for ri, (p_r, gl, igs) in enumerate(tl_rows):
+            paths_r.append(p_r)
+            for si, (_g, uv8, vis8) in enumerate(gl[:GS]):
+                arr_i[ri, si] = uv8[0:4]
+                arr_o[ri, si] = uv8[4:8]
+                v_i[ri, si] = vis8[0:4]
+                v_o[ri, si] = vis8[4:8]
+            for b in igs:
+                ig_b.append(b)
+                ig_f.append(ri)
+        np.savez_compressed(
+            args.label_dump,
+            path=np.array(paths_r), inner=arr_i, outer=arr_o,
+            vis_inner=v_i, vis_outer=v_o,
+            pos=np.zeros((n_r, 3), np.float32),
+            vel=np.zeros((n_r, 3), np.float32),
+            quat=np.tile(np.array([1, 0, 0, 0], np.float32), (n_r, 1)),
+            gate_idx=np.zeros(n_r, np.int64),
+            next_gate_pos=np.zeros((n_r, 3), np.float32),
+            pose_valid=np.zeros(n_r, np.float32),
+            ignore_boxes=np.array(ig_b, np.float32).reshape(-1, 4),
+            ignore_frame_idx=np.array(ig_f, np.int64))
+        n_partial = int(((v_i.sum(2) + v_o.sum(2) > 0)
+                         & (v_i.sum(2) + v_o.sum(2) < 6)).sum())
+        print(f"temporal labels: {n_r} frames ({n_partial} partial-view "
+              f"gate slots) -> {args.label_dump}")
     print(f"relocalizations: {len(relocs)}")
     for (tr, gi, ang, rms, _pb, _pn) in relocs[:60]:
         print(f"  t {tr:5.1f}s -> gate {gi:2d}  att-agree {ang:4.1f}deg  "
