@@ -49,14 +49,17 @@ def orange_channel(bgr):
 
 class GateDataset(Dataset):
     def __init__(self, files, train=True, path_map=None):
-        """path_map: optional 'old_prefix::new_prefix' applied to stored
-        frame paths (for training on a machine other than the recorder's)."""
+        """path_map: 'old_prefix::new_prefix' (str or list of them) applied
+        to stored frame paths (training on a different machine); first
+        matching prefix wins."""
         self.train = train
         self.items = []
-        pm = None
+        pms = []
         if path_map:
-            old, new = path_map.split("::", 1)
-            pm = (old.rstrip("\\/"), new.rstrip("\\/"))
+            maps = [path_map] if isinstance(path_map, str) else path_map
+            for m in maps:
+                old, new = m.split("::", 1)
+                pms.append((old.rstrip("\\/"), new.rstrip("\\/")))
         for f in files:
             d = np.load(f, allow_pickle=False)
             if len(d["path"]) == 0:
@@ -79,10 +82,12 @@ class GateDataset(Dataset):
             n = len(paths)
             for i in range(n):
                 p = str(paths[i])
-                if pm is not None and p.startswith(pm[0]):
-                    p = pm[1] + p[len(pm[0]):]
-                    if "/" in pm[1]:          # POSIX target: fix separators
-                        p = p.replace("\\", "/")
+                for pm in pms:
+                    if p.startswith(pm[0]):
+                        p = pm[1] + p[len(pm[0]):]
+                        if "/" in pm[1]:      # POSIX target: fix separators
+                            p = p.replace("\\", "/")
+                        break
                 self.items.append({
                     "path": p,
                     "pos": pos[i], "R": R[i],
@@ -303,8 +308,9 @@ def main():
     ap.add_argument("--resume", default=None, help="checkpoint to init from")
     ap.add_argument("--tag", default=None,
                     help="version tag: checkpoints/logs get _<tag> names")
-    ap.add_argument("--path-map", default=None,
-                    help="old_prefix::new_prefix remap for frame paths")
+    ap.add_argument("--path-map", action="append", default=None,
+                    help="old_prefix::new_prefix remap for frame paths "
+                         "(repeatable)")
     args = ap.parse_args()
 
     torch.backends.cudnn.benchmark = True
