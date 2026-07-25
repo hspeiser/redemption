@@ -18,8 +18,10 @@ CAPTURES = Path(r"C:\Users\henry\Downloads\AI-GP Simulator v1.0.3379"
 
 
 def main():
-    labels_dir = REPO / "data" / "labels_vq2"
-    out_tar = REPO / "data" / "vq2_train_frames.tar"
+    labels_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else \
+        REPO / "data" / "labels_vq2"
+    out_tar = Path(sys.argv[2]) if len(sys.argv) > 2 else \
+        REPO / "data" / "vq2_train_frames.tar"
     paths = set()
     n_files = 0
     for f in sorted(labels_dir.glob("*.npz")):

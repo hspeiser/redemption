@@ -405,6 +405,7 @@ def main():
     edge_resid = {}       # (locked_gate, next_gate) -> list of 3D offsets
     flip_votes = {}       # gate -> list of bool (matched better 180-flipped)
     last_fuse = {}        # gate -> last time its corners were fused
+    strong_fuse = {}      # gate -> last STRONG fuse (>=5 corners, tight sig)
     tl_rows = []          # temporal-transfer label rows
     last_upd = t_start
     prev_t = None
@@ -675,8 +676,10 @@ def main():
             n = ekf.update_corners(obs)
             if n:
                 last_upd = t_imu
-                for gi_f in matched_g:
+                for gi_f, (nm_f, _c_f) in matched_g.items():
                     last_fuse[gi_f] = t_imu
+                    if nm_f >= 5 and sig_p < 0.06:
+                        strong_fuse[gi_f] = t_imu
 
             # temporal-transfer labels: gates actively fused moments ago
             # keep exact relative pose through the approach/pass — label
@@ -685,7 +688,8 @@ def main():
                 FLIP_L = (1, 0, 3, 2, 5, 4, 7, 6)
                 gates_lab = []
                 for gi_l, t_f in last_fuse.items():
-                    if t_imu - t_f > 0.35:
+                    t_strong = strong_fuse.get(gi_l, -1e9)
+                    if t_imu - t_f > 0.35 and t_imu - t_strong > 0.8:
                         continue
                     flip_l = bool(flip_votes.get(gi_l)) and \
                         np.mean(flip_votes[gi_l]) > 0.5
@@ -716,9 +720,13 @@ def main():
                     # this-frame corroboration: the projection must agree
                     # with live net evidence, or it does not become a label
                     # (post-fuse drift was producing floating labels)
+                    # a STRONG recent lock earns a corroboration-free window
+                    # (pure IMU drift over 0.8s is cm-scale) — this is what
+                    # labels the pass-through frames the teacher net cannot
                     ok_lab = n_in >= 2 and (
                         n_snap >= 2 or
-                        (n_snap >= 1 and t_imu - t_f < 0.12))
+                        (n_snap >= 1 and t_imu - t_f < 0.12) or
+                        t_imu - t_strong < 0.8)
                     if ok_lab:
                         gates_lab.append((gi_l, uv8, vis8))
                 if gates_lab:
