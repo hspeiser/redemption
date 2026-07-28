@@ -54,6 +54,7 @@ def main():
         "vq2_map_human3.json.journal.jsonl": "vq2_trace_r3.npz",
         "vq2_map_human4.json.journal.jsonl": "vq2_trace_r4.npz",
         "vq2_map_human5.json.journal.jsonl": "vq2_trace_r6.npz",
+        "vq2_map_human7.json.journal.jsonl": "vq2_trace_full.npz",
     }
     # gyro-pure attitude chain (shared, map-independent)
     imu = load_imu(EP)
