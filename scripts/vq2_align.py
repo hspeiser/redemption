@@ -189,6 +189,10 @@ def main():
                          "corners for the EKF pass")
     ap.add_argument("--ckpt", default=str(
         REPO / "data/models/gatenet_v6wsl_best.pt"))
+    ap.add_argument("--dump-obs", default=None,
+                    help="npz path: per-frame single-gate PnP observations "
+                         "in gyro-chain world frame (for the joint SLAM "
+                         "solve): t, active_gate, rel_world, yaw, rms")
     ap.add_argument("--dump-trace", default=None,
                     help="npz path: per-frame belief (t, frame path, pos, "
                          "quat_wxyz, sigma_p) for the map editor")
@@ -230,7 +234,22 @@ def main():
     R_cb = np.asarray(calib["R_cb"])
 
     imu = load_imu(ep)
+    # recordings can span sim resets (clock jumps backward): clip to the
+    # LONGEST monotonic segment — frames/race rows outside it are dropped
+    brk = np.where(np.diff(imu[:, 0]) < -0.5)[0]
+    if len(brk):
+        segs = np.split(np.arange(len(imu)), brk + 1)
+        seg = max(segs, key=len)
+        print(f"clock segments: {len(segs)} -> keeping longest "
+              f"({len(seg)}/{len(imu)} samples, "
+              f"t {imu[seg[0],0]:.1f}..{imu[seg[-1],0]:.1f})")
+        imu = imu[seg]
     frames, clock_off = load_frames(ep, imu)
+    t_lo, t_hi = imu[0, 0] - 0.5, imu[-1, 0] + 0.5
+    n_all = len(frames)
+    frames = [(t, p) for (t, p) in frames if t_lo <= t <= t_hi]
+    if len(frames) != n_all:
+        print(f"frames clipped to clock segment: {len(frames)}/{n_all}")
     if args.dt_offset:
         frames = [(t + args.dt_offset, p) for (t, p) in frames]
     print(f"{len(frames)} frames, {len(imu)} imu samples, "
@@ -350,6 +369,8 @@ def main():
     rs = load_race_status(ep)
     rs_t = np.interp([w for (w, _a, _s) in rs], iw[:, 0], iw[:, 1])
     rs_ag = np.array([a for (_w, a, _s) in rs])
+    m_rs = (rs_t >= t_lo) & (rs_t <= t_hi)
+    rs_t, rs_ag = rs_t[m_rs], rs_ag[m_rs]
     # scrub the stale pre-reset tail at the head (ag=17 before race re-arms)
     k0 = int(np.argmax(rs_ag == 0)) if (rs_ag == 0).any() else 0
     rs_t, rs_ag = rs_t[k0:], rs_ag[k0:]
@@ -408,6 +429,7 @@ def main():
     yaw_rows = []    # (gate_id, observed local yaw deg)
     assoc_errs = []  # uncapped nearest-gate pixel error per clean-det frame
     trace = []            # (t, path, p(3), q_wxyz(4), sigma_p)
+    obs_rows = []         # (t, ag, rel_world(3), yaw_deg, rms, depth)
     lock_gate = None      # gate currently hard-locked (sigma small)
     edge_resid = {}       # (locked_gate, next_gate) -> list of 3D offsets
     flip_votes = {}       # gate -> list of bool (matched better 180-flipped)
@@ -584,6 +606,35 @@ def main():
                     if ds[gj] < 10.0:
                         edge_resid.setdefault((agl, gj), []).append(
                             p_meas - np.asarray(gates[gj]["pos"]))
+
+            # SLAM observation dump: PnP of the BIGGEST clean det (assumed
+            # = race-status active gate), rotated to the gyro-chain world
+            # frame. Map-independent by construction.
+            if args.dump_obs and peaks is not None and clean_dets:
+                dd0 = max(clean_dets, key=lambda d0: d0["area"])
+                x0, y0 = dd0["outer"].min(0) - 12
+                x1, y1 = dd0["outer"].max(0) + 12
+                idxs0, uvs0 = [], []
+                for c in range(8):
+                    inb = [(u, v, sc) for (u, v, sc) in peaks[c]
+                           if x0 <= u <= x1 and y0 <= v <= y1]
+                    if inb:
+                        u, v, _ = max(inb, key=lambda q0: q0[2])
+                        idxs0.append(c)
+                        uvs0.append([u, v])
+                if len(idxs0) >= 6:
+                    br0 = pnp_points_all(idxs0, uvs0, K)
+                    if br0 and br0[0][2] < 1.0:
+                        R_o, t_o, rms_o = br0[0]
+                        R_wc_o = R_gyro @ R_cb.T
+                        relw = R_wc_o @ t_o
+                        R_go = R_wc_o @ R_o
+                        obs_rows.append((
+                            t_imu - t_start, active_gate(t_imu),
+                            float(relw[0]), float(relw[1]), float(relw[2]),
+                            float(np.degrees(np.arctan2(R_go[1, 0],
+                                                        R_go[0, 0]))),
+                            rms_o, float(np.linalg.norm(t_o))))
 
             # convention-neutral pair measurement: PnP two co-visible gates
             # independently -> gate->gate vector in the local frame (drone
@@ -1031,6 +1082,10 @@ def main():
             {"frame": "local spawn frame", "gates": gates}, indent=1))
         print(f"corrected map ({n_corr} gates nudged) -> "
               f"{args.write_corrected_map}")
+    if args.dump_obs and obs_rows:
+        np.savez_compressed(args.dump_obs,
+                            rows=np.array(obs_rows, np.float64))
+        print(f"obs: {len(obs_rows)} rows -> {args.dump_obs}")
     if args.dump_trace and trace:
         np.savez_compressed(
             args.dump_trace,
