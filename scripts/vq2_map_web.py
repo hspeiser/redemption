@@ -257,8 +257,7 @@ cv.addEventListener('mousedown',e=>{
   document.getElementById('fitmsg').textContent='corner '+clicks.length+'/4';
   if(clicks.length==4){post('/fit',{g:sel,i:i,corners:clicks}).then(r=>{
    clicks=[];fitMode=false;document.getElementById('fit').classList.remove('on');
-   if(r.ok){sel=r.gate;gsel.value=sel;}
-   document.getElementById('fitmsg').textContent=r.ok?('fitted GATE '+r.gate+'  rms '+r.rms+'px  pos '+r.pos+'  yaw '+r.yaw):('FIT FAILED '+r.err);
+   document.getElementById('fitmsg').textContent=r.ok?('fitted GATE '+r.gate+' (your selection)  rms '+r.rms+'px  pos '+r.pos+'  yaw '+r.yaw):('FIT FAILED '+r.err);
    load();});}
  }});
 cv.addEventListener('mousemove',e=>{if(panning){ox+=e.offsetX-px;oy+=e.offsetY-py;px=e.offsetX;py=e.offsetY;draw();}});
@@ -349,11 +348,10 @@ class Handler(BaseHTTPRequestHandler):
                 S["rev"] += 1
                 self._json({"ok": True})
             elif u.path == "/fit":
-                gi, d_pick = nearest_gate(int(body["i"]), body["corners"])
-                if gi is None:
-                    self._json({"ok": False,
-                                "err": "no map gate near clicks"})
-                else:
+                # attribution = the user's dropdown selection. ALWAYS.
+                # the selector is never changed by the server.
+                gi = int(body["g"])
+                if True:
                     r = solve_from_clicks(int(body["i"]), gi,
                                           body["corners"])
                     # append-only journal: every fit is replayable even if
@@ -363,7 +361,6 @@ class Handler(BaseHTTPRequestHandler):
                             {"frame": int(body["i"]), "gate": gi,
                              "clicks": body["corners"], **r}) + "\n")
                     if r.get("ok"):
-                        S["sel"] = gi
                         Path(S["out"] + ".autosave.json").write_text(
                             json.dumps({"frame": "autosave",
                                         "gates": S["gates"]}, indent=1))
