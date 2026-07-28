@@ -101,6 +101,21 @@ def project_gates(i):
     return out
 
 
+def nearest_gate(i, corners):
+    """Which map gate did the user click? Nearest projected center to the
+    click centroid — never trust the dropdown for attribution."""
+    cc = np.mean(np.asarray(corners, float), axis=0)
+    best, best_d = None, 1e9
+    for row in project_gates(i):
+        if row["center"] is None:
+            continue
+        d = float(np.hypot(row["center"][0] - cc[0],
+                           row["center"][1] - cc[1]))
+        if d < best_d:
+            best, best_d = row["id"], d
+    return best, best_d
+
+
 def solve_from_clicks(i, gi, corners):
     """4 clicked HOLE corners (TL,TR,BR,BL in image) -> gate pos+yaw."""
     fx, fy, cx, cy = S["K"]
@@ -138,7 +153,7 @@ def solve_from_clicks(i, gi, corners):
     g["pos"] = [float(v) for v in p_new]
     set_yaw(g, yaw)
     S["dirty"].add(gi)
-    return {"ok": True, "rms": round(rms, 2),
+    return {"ok": True, "gate": gi, "rms": round(rms, 2),
             "pos": [round(v, 2) for v in g["pos"]], "yaw": round(yaw, 1)}
 
 
@@ -242,7 +257,8 @@ cv.addEventListener('mousedown',e=>{
   document.getElementById('fitmsg').textContent='corner '+clicks.length+'/4';
   if(clicks.length==4){post('/fit',{g:sel,i:i,corners:clicks}).then(r=>{
    clicks=[];fitMode=false;document.getElementById('fit').classList.remove('on');
-   document.getElementById('fitmsg').textContent=r.ok?('fit ok rms '+r.rms+'px  pos '+r.pos+'  yaw '+r.yaw):('FIT FAILED '+r.err);
+   if(r.ok){sel=r.gate;gsel.value=sel;}
+   document.getElementById('fitmsg').textContent=r.ok?('fitted GATE '+r.gate+'  rms '+r.rms+'px  pos '+r.pos+'  yaw '+r.yaw):('FIT FAILED '+r.err);
    load();});}
  }});
 cv.addEventListener('mousemove',e=>{if(panning){ox+=e.offsetX-px;oy+=e.offsetY-py;px=e.offsetX;py=e.offsetY;draw();}});
@@ -333,10 +349,17 @@ class Handler(BaseHTTPRequestHandler):
                 S["rev"] += 1
                 self._json({"ok": True})
             elif u.path == "/fit":
-                r = solve_from_clicks(int(body["i"]), int(body["g"]),
-                                      body["corners"])
-                S["rev"] += 1
-                self._json(r)
+                gi, d_pick = nearest_gate(int(body["i"]), body["corners"])
+                if gi is None:
+                    self._json({"ok": False,
+                                "err": "no map gate near clicks"})
+                else:
+                    r = solve_from_clicks(int(body["i"]), gi,
+                                          body["corners"])
+                    if r.get("ok"):
+                        S["sel"] = gi
+                    S["rev"] += 1
+                    self._json(r)
             elif u.path == "/reset":
                 gi = int(body["g"])
                 S["gates"][gi] = json.loads(json.dumps(S["orig"][gi]))
