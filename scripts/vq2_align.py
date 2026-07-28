@@ -189,6 +189,11 @@ def main():
                          "corners for the EKF pass")
     ap.add_argument("--ckpt", default=str(
         REPO / "data/models/gatenet_v6wsl_best.pt"))
+    ap.add_argument("--dump-trace", default=None,
+                    help="npz path: per-frame belief (t, frame path, pos, "
+                         "quat_wxyz, sigma_p) for the map editor")
+    ap.add_argument("--thresh", type=float, default=0.25,
+                    help="net corner peak decode threshold")
     ap.add_argument("--label-dump", default=None,
                     help="npz path: temporal-transfer labels — while the "
                          "EKF is locked on an actively-fused gate, project "
@@ -380,7 +385,8 @@ def main():
                     "cuda", dtype=torch.float16, enabled=dev == "cuda"):
                 o = net(xt)
             return decode_corners(o["hm"][0].float().cpu(),
-                                  o["off"][0].float().cpu(), thresh=0.25)
+                                  o["off"][0].float().cpu(),
+                                  thresh=args.thresh)
 
     ekf = GateEKF(K, R_cb, sigma_px=1.5 if net is not None else 5.0)
     q0 = R0.as_quat()
@@ -401,6 +407,7 @@ def main():
     pair_rows = []   # (t, active_gate, dp_local A->B)
     yaw_rows = []    # (gate_id, observed local yaw deg)
     assoc_errs = []  # uncapped nearest-gate pixel error per clean-det frame
+    trace = []            # (t, path, p(3), q_wxyz(4), sigma_p)
     lock_gate = None      # gate currently hard-locked (sigma small)
     edge_resid = {}       # (locked_gate, next_gate) -> list of 3D offsets
     flip_votes = {}       # gate -> list of bool (matched better 180-flipped)
@@ -671,6 +678,12 @@ def main():
                             edge_checks.append((t_imu - t_start, ag, best_g,
                                                 best_e))
 
+            if args.dump_trace:
+                q_tr = ekf.q.as_quat()
+                trace.append((t_imu - t_start, str(path),
+                              ekf.p.copy(),
+                              np.array([q_tr[3], q_tr[0], q_tr[1],
+                                        q_tr[2]]), sig_p))
             if args.pins_only:
                 obs = []
             n = ekf.update_corners(obs)
@@ -1018,6 +1031,15 @@ def main():
             {"frame": "local spawn frame", "gates": gates}, indent=1))
         print(f"corrected map ({n_corr} gates nudged) -> "
               f"{args.write_corrected_map}")
+    if args.dump_trace and trace:
+        np.savez_compressed(
+            args.dump_trace,
+            t=np.array([r[0] for r in trace]),
+            path=np.array([r[1] for r in trace]),
+            pos=np.array([r[2] for r in trace], np.float64),
+            quat=np.array([r[3] for r in trace], np.float64),
+            sigma=np.array([r[4] for r in trace], np.float64))
+        print(f"trace: {len(trace)} frames -> {args.dump_trace}")
     if args.label_dump and tl_rows:
         GS = 3
         n_r = len(tl_rows)
