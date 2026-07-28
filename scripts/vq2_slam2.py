@@ -157,19 +157,21 @@ sol = solve()
 drop = set()
 for oi, o in enumerate(rows):
     gid = int(o[1])
+    if gid not in KNOWN:
+        continue          # unknown-gate obs are few and range-soft-weighted
     trel = round(float(o[0]), 4)
     k = kf_of.get(trel)
     if k is None:
         continue
     p_k = sol[6 * k:6 * k + 3]
-    g = KNOWN.get(gid)
-    if g is None:
-        if gid not in u_of:
-            continue
-        g = sol[u_of[gid]:u_of[gid] + 3]
-    res = np.linalg.norm(g - p_k - o[2:5])
+    res = np.linalg.norm(KNOWN[gid] - p_k - o[2:5])
     if res > 2.0:
         drop.add(oi)
+from collections import Counter
+dropped_gates = Counter(int(rows[oi][1]) for oi in drop)
+print(f'robust pass drop composition: {dict(dropped_gates)}')
+for g in [10,12,13,15]:
+    print(f'  first-solve g{g}:', sol[u_of[g]:u_of[g]+3].round(2))
 print(f"robust pass: dropping {len(drop)} outlier obs; re-solving")
 sol = solve(drop=drop)
 print(f"yaw-rate bias: {np.degrees(sol[B_COL])*1000:.3f} mdeg/s... "
