@@ -356,8 +356,17 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     r = solve_from_clicks(int(body["i"]), gi,
                                           body["corners"])
+                    # append-only journal: every fit is replayable even if
+                    # the session dies or a later fit overwrites the gate
+                    with open(S["out"] + ".journal.jsonl", "a") as jf:
+                        jf.write(json.dumps(
+                            {"frame": int(body["i"]), "gate": gi,
+                             "clicks": body["corners"], **r}) + "\n")
                     if r.get("ok"):
                         S["sel"] = gi
+                        Path(S["out"] + ".autosave.json").write_text(
+                            json.dumps({"frame": "autosave",
+                                        "gates": S["gates"]}, indent=1))
                     S["rev"] += 1
                     self._json(r)
             elif u.path == "/reset":
@@ -392,7 +401,7 @@ def main():
         "quat": tr["quat"], "sigma": tr["sigma"],
         "gates": m["gates"],
         "orig": json.loads(json.dumps(m["gates"])),
-        "sel": 0, "dirty": set(), "out": args.out, "rev": 0,
+        "sel": 0, "dirty": set(), "out": str(args.out), "rev": 0,
     })
     print(f"map editor: http://localhost:{args.port}  "
           f"({len(S['paths'])} frames, {len(S['gates'])} gates)")
