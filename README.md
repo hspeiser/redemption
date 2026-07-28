@@ -44,6 +44,33 @@ covariance-adaptive corner association and lost-mode relocalization
 (pose-head prior + joint PnP re-seed). Known limits: multi-second
 look-away vision gaps degrade until relocalization fires.
 
+## VQ2 localization (no odometry, no broadcast map)
+
+Map of record: `data/vq2_map_slam2.json` — built from human corner-fits
+(browser editor `scripts/vq2_map_web.py`, click journals in
+`data/vq2_map_human*.journal.jsonl`) chained with short IMU hops
+(`scripts/vq2_click_chain.py`), plus anchor-based SLAM for late gates
+(`scripts/vq2_slam2.py`). The pak-derived `gate_map.json` is off-by-one
+(entry 0 = spawn marker; race gate k = entry k+1; gate 17 = finish line,
+no physical gate) and carries dm–m per-gate placement error — usable
+only as an association prior, never as truth.
+
+Acceptance criteria and status (measured by `scripts/vq2_align.py`,
+corner net `data/models/gatenet_v7_best.pt`):
+
+- [x] Independent-lap generalization (lap never used for mapping or
+  training, rc_20260724_003101): 2.26 px median innovation, sigma
+  3.5 cm median, ~59 % of all frames fusing, <=4 relocalizations.
+- [x] Continuous tracking through certified gates: 30 unbroken seconds
+  at 1.2–2.1 px / sigma 2–3 cm on the mapping lap; through-gate
+  moments at 0.8–1.3 cm.
+- [ ] Gates 11/14/16 at click-grade (needs one editor session or a
+  looser SLAM observation harvest).
+- [ ] sigma p90 < 30 cm full lap (currently 165 cm, dominated by the
+  uncertified back-half gates).
+- [ ] Racing-speed robustness (fast laps 003405/003525 degrade even on
+  certified gates).
+
 ## Training
 
 `scripts/train_net.py` — from-scratch recipe: 45 epochs, batch 16, lr 3e-4
