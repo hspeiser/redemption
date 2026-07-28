@@ -161,8 +161,22 @@ def main():
             obs.append({"t": trel, "rel": rel_w,
                         "yaw": yaw_sess + dyaw,
                         "ag": active_gate(trel)})
+    # append NET PnP observations — OFF by default: net fixes only exist
+    # at 8-22m range where 0.8px = ~1m depth noise, which poisons the
+    # session velocity regressions (verified empirically: broke gates 1-9)
+    obs_npz = D / "vq2_obs_003153.npz"
+    if "--with-net-obs" in sys.argv and obs_npz.exists():
+        rows = np.load(obs_npz)["rows"]
+        n_add = 0
+        for r0 in rows:
+            if r0[6] > 0.8 or r0[7] > 22.0:
+                continue
+            obs.append({"t": float(r0[0]), "rel": np.array(r0[2:5]),
+                        "yaw": float(r0[5]), "ag": int(r0[1])})
+            n_add += 1
+        print(f"net observations added: {n_add}")
     obs.sort(key=lambda o: o["t"])
-    print(f"click observations: {len(obs)}")
+    print(f"total observations: {len(obs)}")
 
     # group into sessions: same ag & gaps < 1.5s
     sessions = []
