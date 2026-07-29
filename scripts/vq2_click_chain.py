@@ -148,6 +148,7 @@ def main():
                 continue
             fidx = min(r0["frame"], len(st["t"]) - 1)
             trel = float(st["t"][fidx])
+            sig_sess = float(st["sigma"][fidx])
             p_sess = st["pos"][fidx]
             qw, qx, qy, qz = st["quat"][fidx]
             R_sess = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
@@ -162,7 +163,9 @@ def main():
                 Rws[k] @ R_sess.T).as_euler("zyx", degrees=True)[0])
             obs.append({"t": trel, "rel": rel_w,
                         "yaw": yaw_sess + dyaw,
-                        "ag": active_gate(trel)})
+                        "ag": active_gate(trel),
+                        "p_abs": np.asarray(p_sess, float),
+                        "sig": sig_sess})
     # append NET PnP observations — OFF by default: net fixes only exist
     # at 8-22m range where 0.8px = ~1m depth noise, which poisons the
     # session velocity regressions (verified empirically: broke gates 1-9)
@@ -232,15 +235,25 @@ def main():
         if cam_a is None:
             continue
         cam_a_world = gates_pos[sa["ag"]] + sa["cam_tm"]
-        if dt > args.max_gap:
-            print(f"  gap {dt:.1f}s ag{sa['ag']}->{sb['ag']} exceeds "
-                  f"{args.max_gap}s: chain broken, still bridging (drift!)")
-        # bridge
-        d_imu = P_at(sb["tm"]) - P_at(sa["tm"]) - V_at(sa["tm"]) * dt
-        cam_b_world = cam_a_world + sa["v_tm"] * dt + d_imu
+        # best belief anchor available inside session b (the WORKING
+        # 0-9 recipe: a solid absolute anchor beats a long IMU bridge)
+        best_o = min(sb["obs"], key=lambda o: o.get("sig", 9e9))
+        if dt > args.max_gap and best_o.get("sig", 9e9) < 0.20:
+            cam_at_fit = best_o["p_abs"]
+            cam_b_world = cam_at_fit + sb["v_tm"] * (sb["tm"]
+                                                     - best_o["t"])
+            src = f"BELIEF-ANCHOR (sig {best_o['sig']*100:.0f}cm)"
+        else:
+            if dt > args.max_gap:
+                print(f"  gap {dt:.1f}s ag{sa['ag']}->{sb['ag']} exceeds "
+                      f"{args.max_gap}s and no tight belief: bridging "
+                      f"(drift!)")
+            d_imu = P_at(sb["tm"]) - P_at(sa["tm"]) - V_at(sa["tm"]) * dt
+            cam_b_world = cam_a_world + sa["v_tm"] * dt + d_imu
+            src = f"imu dt {dt:.2f}s"
         gates_pos[sb["ag"]] = cam_b_world - sb["cam_tm"]
         gates_yaw[sb["ag"]] = sb["yaw"]
-        print(f"  chained ag {sa['ag']} -> {sb['ag']} (dt {dt:.2f}s): "
+        print(f"  chained ag {sa['ag']} -> {sb['ag']} [{src}]: "
               f"gate{sb['ag']} at {np.round(gates_pos[sb['ag']], 2)}")
 
     prior = json.loads((D / "vq2_map_sim_94p62_0p91.json").read_text())[
