@@ -32,6 +32,9 @@ def main():
     ap.add_argument("--trace", required=True)
     ap.add_argument("--map", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--max-gate", type=int, default=16,
+                    help="highest race gate to draw (17 is the non-visual "
+                         "finish marker and is hidden by default)")
     args = ap.parse_args()
 
     calib = load_calib(REPO / "data/calib/calib.json")
@@ -56,6 +59,8 @@ def main():
         R_wb = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
         R_cw = R_cb @ R_wb.T
         for gi, g in enumerate(gates):
+            if gi > args.max_gate:
+                continue
             pts_all = []
             ok = True
             for kind in ("hole", "panel"):
@@ -83,8 +88,13 @@ def main():
                     cv2.putText(img, str(gi), tuple(cc.astype(int)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.55,
                                 (0, 200, 255), 2)
-        cv2.putText(img, f"t {tr['t'][i]:5.1f}s  sigma "
-                    f"{tr['sigma'][i]*100:6.1f}cm  MAP CHECK",
+        if "splice_weight" in tr.files:
+            mode = "HYBRID VISUAL LOCK"
+        elif "visual_smooth_delta" in tr.files:
+            mode = "SPARSE VISUAL SMOOTH"
+        else:
+            mode = f"sigma {tr['sigma'][i]*100:6.1f}cm"
+        cv2.putText(img, f"t {tr['t'][i]:5.1f}s  {mode}  MAP CHECK",
                     (6, H - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
                     (255, 255, 255), 1)
         vw.write(img)

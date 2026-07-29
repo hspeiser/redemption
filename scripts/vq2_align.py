@@ -211,9 +211,16 @@ def main():
                     help="use a measured local-frame map (from "
                          "vq2_build_map.py) instead of the anchored "
                          "gate_map.json")
+    ap.add_argument("--no-map-reanchor", action="store_true",
+                    help="load --map-json coordinates literally; by default "
+                         "its gate-0 pose is rigidly aligned to this episode's "
+                         "measured spawn gate")
     ap.add_argument("--write-corrected-map", default=None,
                     help="after the run, apply median locked-state per-gate "
                          "position corrections and write the map json here")
+    ap.add_argument("--write-runtime-map", default=None,
+                    help="write the episode-local map after spawn re-anchoring "
+                         "(use this exact map when rendering the dumped trace)")
     ap.add_argument("--yaw-flip", action="store_true",
                     help="flip gate orientations 180 deg (front/back "
                          "ambiguity of the spawn PnP)")
@@ -231,6 +238,10 @@ def main():
                     help="use gate PnP for direct world position/velocity "
                          "pins with pure-gyro attitude; disables corner-EKF "
                          "attitude corrections and legacy relocalization")
+    ap.add_argument("--gyro-attitude", action="store_true",
+                    help="run normal V7 corner fusion but let vision update "
+                         "translation/velocity only; attitude remains the "
+                         "pure IMU gyro integration")
     args = ap.parse_args()
     args.mirror_e = not args.no_mirror
     ep = Path(args.episode_dir)
@@ -351,12 +362,51 @@ def main():
     if args.map_json:
         gates = json.loads(Path(args.map_json).read_text())["gates"]
         print(f"measured map: {args.map_json} ({len(gates)} gates)")
+        if not args.no_map_reanchor:
+            # Measured maps live in the local frame of the episode that built
+            # them. Every new recording defines yaw=0 independently from its
+            # rest attitude, so loading those coordinates literally rotates
+            # the whole course by the inter-episode spawn-yaw difference.
+            # Align the map's gate-0 pose to the gate-0 pose measured above.
+            p_map0 = np.asarray(gates[0]["pos"], float)
+            # Use the spawn->gate0 bearing, not the planar PnP orientation.
+            # The gate is square and its solved in-plane yaw can move several
+            # degrees between recordings even when centre translation is
+            # repeatable to centimetres. A 2-degree yaw mistake becomes
+            # metres of lateral map error at the back of the course.
+            yaw_map0 = float(np.degrees(
+                np.arctan2(p_map0[1], p_map0[0])))
+            yaw_obs0 = float(np.degrees(
+                np.arctan2(p_med[1], p_med[0])))
+            dyaw = (yaw_obs0 - yaw_map0 + 180.0) % 360.0 - 180.0
+            R_anchor_map = Rotation.from_euler(
+                "Z", dyaw, degrees=True).as_matrix()
+            for gate in gates:
+                gate["pos"] = (
+                    p_med + R_anchor_map @ (
+                        np.asarray(gate["pos"], float) - p_map0)).tolist()
+                qg = gate["quat_wxyz"]
+                Rg = Rotation.from_quat(
+                    [qg[1], qg[2], qg[3], qg[0]]).as_matrix()
+                qn = Rotation.from_matrix(
+                    R_anchor_map @ Rg).as_quat()
+                gate["quat_wxyz"] = [
+                    float(qn[3]), float(qn[0]), float(qn[1]), float(qn[2])]
+            print(f"  re-anchored gate0: translation "
+                  f"{np.round(p_med - p_map0, 3)}m, yaw {dyaw:+.2f}deg")
     else:
         gates = load_vq2_map(anchor["anchor_t"], anchor["anchor_yaw_deg"],
                              mirror_e=args.mirror_e,
                              gate_yaw_offset_deg=(
                                  yaw_off_solved if args.decouple_yaw
                                  else None))
+    if args.write_runtime_map:
+        Path(args.write_runtime_map).write_text(json.dumps(
+            {"source_map": args.map_json,
+             "episode_dir": str(ep),
+             "anchor": anchor,
+             "gates": gates}, indent=2))
+        print(f"runtime map -> {args.write_runtime_map}")
     gate_world = [np.concatenate(gate_quads_world_vq2(g)) for g in gates]
     gate_R = [Rotation.from_quat([g["quat_wxyz"][1], g["quat_wxyz"][2],
                                   g["quat_wxyz"][3], g["quat_wxyz"][0]]
@@ -378,9 +428,17 @@ def main():
     rs_ag = np.array([a for (_w, a, _s) in rs])
     m_rs = (rs_t >= t_lo) & (rs_t <= t_hi)
     rs_t, rs_ag = rs_t[m_rs], rs_ag[m_rs]
+    # UDP/MAV rows can arrive out of timestamp order around a simulator reset.
+    # np.searchsorted below requires a sorted clock. Sort stably, discard any
+    # stale pre-reset tail before the first armed gate-0 row, then enforce the
+    # official monotonic race sequence. Late stale packets with a lower gate
+    # index can no longer send association backward by several gates.
+    order_rs = np.argsort(rs_t, kind="stable")
+    rs_t, rs_ag = rs_t[order_rs], rs_ag[order_rs]
     # scrub the stale pre-reset tail at the head (ag=17 before race re-arms)
     k0 = int(np.argmax(rs_ag == 0)) if (rs_ag == 0).any() else 0
     rs_t, rs_ag = rs_t[k0:], rs_ag[k0:]
+    rs_ag = np.maximum.accumulate(rs_ag)
 
     def active_gate(t):
         if len(rs_t) == 0 or t < rs_t[0]:
@@ -447,6 +505,7 @@ def main():
     direct_pin_rows = []  # (time, gate, jump, rms, depth)
     pending_pin = {}      # gate -> (last_time, last_position, count)
     pass_pin_rows = []    # (time, passed_gate, pre-reset error)
+    gyro_translation_pins = []  # generic PnP fallback rows
     last_ag_pin = None
     last_ag_change_t = t_start
     last_pass_pin = None  # (time, pre-reset position error)
@@ -546,7 +605,7 @@ def main():
                 FLIP = (1, 0, 3, 2, 5, 4, 7, 6)   # gate rotated 180 deg
                 for gi in [
                         g for g in (ag_n - 1, ag_n, ag_n + 1)
-                        if 0 <= g < len(gates)
+                        if 0 <= g < min(17, len(gates))
                         and (args.max_fuse_gate is None
                              or g <= args.max_fuse_gate)]:
                     # some map gates are 180-flipped (spline heading vs
@@ -608,7 +667,7 @@ def main():
                 ag = active_gate(t_imu)
                 cand = [
                     g for g in (ag - 1, ag, ag + 1)
-                    if 0 <= g < len(gates)
+                    if 0 <= g < min(17, len(gates))
                     and (args.max_fuse_gate is None
                          or g <= args.max_fuse_gate)
                 ]
@@ -912,13 +971,61 @@ def main():
                 # Translation and velocity came from the explicit pin above.
                 # Never let planar gate geometry modify gyro attitude.
                 obs = []
-            n = ekf.update_corners(obs)
+            n = ekf.update_corners(
+                obs, update_attitude=not args.gyro_attitude)
             if n:
                 last_upd = t_imu
                 for gi_f, (nm_f, _c_f) in matched_g.items():
                     last_fuse[gi_f] = t_imu
                     if nm_f >= 5 and sig_p < 0.06:
                         strong_fuse[gi_f] = t_imu
+
+            # Generic recovery for fast/blurred approaches: when classified
+            # V7 corners fail the batch gate, use a complete clean gate's PnP
+            # translation while retaining pure gyro attitude. Race status
+            # supplies identity; a previous/future visible gate implies an
+            # inter-gate-sized camera jump and fails continuity.
+            if args.gyro_attitude and not n and clean_dets and \
+                    t_imu - last_upd > 0.15:
+                ag_pin = active_gate(t_imu)
+                if 0 <= ag_pin < min(17, len(gates)):
+                    R_wc_pin = ekf.q.as_matrix() @ R_cb.T
+                    pin_candidates = []
+                    for det_pin in clean_dets:
+                        for _Rgc, t_cg, rms_pin in pnp_gate_all(det_pin, K):
+                            if rms_pin > 3.0:
+                                continue
+                            p_pin = np.asarray(
+                                gates[ag_pin]["pos"]) - R_wc_pin @ t_cg
+                            jump_pin = float(np.linalg.norm(p_pin - ekf.p))
+                            pin_candidates.append(
+                                (jump_pin, rms_pin, p_pin))
+                    if pin_candidates:
+                        jump_pin, rms_pin, p_pin = min(
+                            pin_candidates, key=lambda row: row[0])
+                        gap_pin = t_imu - last_upd
+                        jmax_pin = min(4.0, 1.5 + 0.8 * gap_pin)
+                        if jump_pin < jmax_pin:
+                            q_pin = ekf.q.as_quat()
+                            v_pin = ekf.v.copy()
+                            if last_pin is not None and \
+                                    last_pin[1] == ag_pin and \
+                                    0.06 < t_imu - last_pin[0] < 0.7:
+                                v_meas = (p_pin - last_pin[2]) / (
+                                    t_imu - last_pin[0])
+                                if np.linalg.norm(v_meas) < 25.0:
+                                    v_pin = 0.7 * v_pin + 0.3 * v_meas
+                            last_pin = (
+                                t_imu, ag_pin, p_pin.copy())
+                            ekf.init_state(
+                                0.2 * ekf.p + 0.8 * p_pin, v_pin,
+                                [q_pin[3], q_pin[0], q_pin[1], q_pin[2]],
+                                t_imu, pos_std=0.25, vel_std=0.7,
+                                ang_std=0.02)
+                            gyro_translation_pins.append(
+                                (t_imu - t_start, ag_pin,
+                                 jump_pin, rms_pin))
+                            last_upd = t_imu
 
             # temporal-transfer labels: gates actively fused moments ago
             # keep exact relative pose through the approach/pass — label
@@ -1007,7 +1114,7 @@ def main():
                 cands_r = []
                 for gi in [
                         g for g in (ag, ag + 1, ag - 1)
-                        if 0 <= g < len(gates)
+                        if 0 <= g < min(17, len(gates))
                         and (args.max_fuse_gate is None
                              or g <= args.max_fuse_gate)]:
                     for (R_g2c, t_pnp, rms) in branches:
@@ -1018,8 +1125,15 @@ def main():
                         ang = np.degrees(np.arccos(np.clip(cosang, -1, 1)))
                         if ang > 15:
                             continue
-                        p_new = np.asarray(gates[gi]["pos"]) - \
-                            gate_R[gi] @ (R_g2c.T @ t_pnp)
+                        if args.gyro_attitude:
+                            # Translation from PnP does not require trusting
+                            # the square gate's ambiguous map orientation.
+                            R_wc = Rb @ R_cb.T
+                            p_new = np.asarray(
+                                gates[gi]["pos"]) - R_wc @ t_pnp
+                        else:
+                            p_new = np.asarray(gates[gi]["pos"]) - \
+                                gate_R[gi] @ (R_g2c.T @ t_pnp)
                         jump = float(np.linalg.norm(p_new - ekf.p))
                         cands_r.append((p_new, ang, gi, rms, jump))
                 # gate identity by position-jump plausibility: dead-reckon
@@ -1328,6 +1442,18 @@ def main():
             pp = np.asarray(pass_pin_rows, float)
             print(f"  pre-pin error median/p90 {np.median(pp[:,2]):.2f}/"
                   f"{np.percentile(pp[:,2],90):.2f}m")
+    if args.gyro_attitude:
+        print(f"gyro-attitude translation pins: "
+              f"{len(gyro_translation_pins)}")
+        if gyro_translation_pins:
+            gp = np.asarray(gyro_translation_pins, float)
+            counts = {
+                int(g): int((gp[:, 1] == g).sum())
+                for g in np.unique(gp[:, 1]).astype(int)}
+            print(f"  pins per gate: {counts}")
+            print(f"  jump median/p90 {np.median(gp[:,2]):.2f}/"
+                  f"{np.percentile(gp[:,2],90):.2f}m, "
+                  f"PnP rms median {np.median(gp[:,3]):.2f}px")
 
     # pin-chain anchor-yaw fit: dead-reckoned displacement between
     # consecutive pins vs the map's gate-to-gate vector

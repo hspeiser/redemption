@@ -108,9 +108,13 @@ class GateEKF:
                        self.K[1, 1] * Xc[1] / Xc[2] + self.K[1, 2]])
         return uv, Xc
 
-    def update_corners(self, obs, chi2_gate=9.0):
+    def update_corners(self, obs, chi2_gate=9.0, update_attitude=True):
         """obs: list of (Xw (3,), uv_meas (2,)). Batch EKF update with
-        per-observation chi-square gating. Returns number accepted."""
+        per-observation chi-square gating. Returns number accepted.
+
+        If update_attitude is false, vision corrects translation/velocity
+        only. This is useful when a low-noise gyro is more trustworthy than
+        the planar orientation of a symmetric square landmark."""
         H_rows, r_rows = [], []
         Rwb = self.q.as_matrix()
         for Xw, uv_meas in obs:
@@ -129,7 +133,8 @@ class GateEKF:
             dXc_dth = self.R_cb @ skew(Rwb.T @ u)
             H = np.zeros((2, 9))
             H[:, 0:3] = J_uv @ dXc_dp
-            H[:, 6:9] = J_uv @ dXc_dth
+            if update_attitude:
+                H[:, 6:9] = J_uv @ dXc_dth
             r = np.asarray(uv_meas) - uv_pred
             # innovation gating
             S = H @ self.P @ H.T + np.eye(2) * self.sigma_px**2
@@ -145,10 +150,15 @@ class GateEKF:
         Rm = np.eye(len(r)) * self.sigma_px**2
         S = H @ self.P @ H.T + Rm
         Kk = self.P @ H.T @ np.linalg.solve(S, np.eye(len(r)))
+        if not update_attitude:
+            # Cross-covariance can otherwise leak a nominal attitude update
+            # even though the measurement Jacobian has no attitude columns.
+            Kk[6:9, :] = 0.0
         dx = Kk @ r
         self.p += dx[0:3]
         self.v += dx[3:6]
-        self.q = self.q * Rotation.from_rotvec(dx[6:9])
+        if update_attitude:
+            self.q = self.q * Rotation.from_rotvec(dx[6:9])
         I_KH = np.eye(9) - Kk @ H
         self.P = I_KH @ self.P @ I_KH.T + Kk @ Rm @ Kk.T
         return len(H_rows)
