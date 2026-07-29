@@ -140,37 +140,72 @@ def main():
               f"{np.sqrt((res**2).sum(1).mean())*100:.0f}cm "
               f"best-sig {best_o['sig']*100:.0f}cm")
 
+    # bidirectional bridging: anchored sessions seed both a forward and a
+    # backward walk; un-anchored gates between two seeds get the
+    # hop-weighted average (linear bridge drift cancels)
+    for s in sessions:
+        s["anchored"] = s["anchor"]["sig"] < 0.12
+        if s["anchored"]:
+            s["cam_w"] = s["anchor"]["p_abs"] + s["v_tm"] * (
+                s["tm"] - s["anchor"]["t"])
+
+    def bridge(sa, sb):
+        """camera world at sb.tm given sa anchored (works both ways)."""
+        dt = sb["tm"] - sa["tm"]
+        d_imu = P_at(sb["tm"]) - P_at(sa["tm"]) - V_at(sa["tm"]) * dt
+        return sa["cam_w"] + sa["v_tm"] * dt + d_imu
+
+    lastA = None
+    for s in sessions:
+        if s["anchored"]:
+            s["cam_w_f"] = s["cam_w"]
+            s["hops_f"] = 0
+            lastA = s
+        elif lastA is not None and s["tm"] - lastA["tm"] < 8.0 and \
+                "cam_w_f" in lastA:
+            s["cam_w_f"] = bridge({**lastA, "cam_w": lastA["cam_w_f"]}, s)
+            s["hops_f"] = lastA["hops_f"] + 1
+            lastA = s
+    lastB = None
+    for s in reversed(sessions):
+        if s["anchored"]:
+            s["cam_w_b"] = s["cam_w"]
+            s["hops_b"] = 0
+            lastB = s
+        elif lastB is not None and lastB["tm"] - s["tm"] < 8.0 and \
+                "cam_w_b" in lastB:
+            s["cam_w_b"] = bridge({**lastB, "cam_w": lastB["cam_w_b"]}, s)
+            s["hops_b"] = lastB["hops_b"] + 1
+            lastB = s
+
     gates_pos = {}
     gates_yaw = {}
-    prev_s = None
     for s in sessions:
-        if s["anchor"]["sig"] < 0.20:
-            cam_w = s["anchor"]["p_abs"] + s["v_tm"] * (
-                s["tm"] - s["anchor"]["t"])
-            src = f"belief (sig {s['anchor']['sig']*100:.0f}cm)"
-        elif prev_s is not None and s["tm"] - prev_s["tm"] < 4.0 and \
-                prev_s["gate"] in gates_pos:
-            dt = s["tm"] - prev_s["tm"]
-            cam_a = gates_pos[prev_s["gate"]] + prev_s["cam_tm"]
-            d_imu = P_at(s["tm"]) - P_at(prev_s["tm"]) - \
-                V_at(prev_s["tm"]) * dt
-            cam_w = cam_a + prev_s["v_tm"] * dt + d_imu
-            src = f"imu bridge {dt:.2f}s"
-        else:
-            print(f"  gate {s['gate']}: no anchor available, skipped")
-            prev_s = s
+        cands = []
+        if "cam_w_f" in s:
+            cands.append((s["cam_w_f"], 1.0 / (1 + s["hops_f"])))
+        if "cam_w_b" in s:
+            cands.append((s["cam_w_b"], 1.0 / (1 + s["hops_b"])))
+        if not cands:
+            print(f"  gate {s['gate']}: no anchor reachable, skipped")
             continue
+        wsum = sum(w for _c, w in cands)
+        cam_w = sum(c * w for c, w in cands) / wsum
         p = cam_w - s["cam_tm"]
+        src = ("belief" if s["anchored"] else
+               "+".join(f"{d}{s.get('hops_'+d[0], '?')}"
+                        for d in ("fwd", "bwd")
+                        if f"cam_w_{d[0]}" in s))
         if p[2] > -0.2:
-            print(f"  gate {s['gate']}: {np.round(p,2)} below floor "
+            print(f"  gate {s['gate']}: {np.round(p, 2)} below floor "
                   f"[{src}] REJECTED")
-            prev_s = s
             continue
-        gates_pos[s["gate"]] = p
-        gates_yaw[s["gate"]] = s["yaw"]
+        prev = gates_pos.get(s["gate"])
+        if prev is None or s["anchored"]:
+            gates_pos[s["gate"]] = p
+            gates_yaw[s["gate"]] = s["yaw"]
         print(f"  gate {s['gate']:2d} [{src}]: {np.round(p, 2)} "
               f"yaw {s['yaw']:+.1f}")
-        prev_s = s
 
     base = json.loads(Path(args.base).read_text())
     gates = base["gates"]
