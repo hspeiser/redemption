@@ -37,6 +37,12 @@ OBJ8 = np.array([[-HOLE, 0, -HOLE], [HOLE, 0, -HOLE], [HOLE, 0, HOLE],
                  [-PANEL, 0, -PANEL], [PANEL, 0, -PANEL], [PANEL, 0, PANEL],
                  [-PANEL, 0, PANEL]])
 RX90 = np.array([[1.0, 0, 0], [0, 0, -1.0], [0, 1.0, 0]])
+OBJ_APPARENT_INNER = np.array([
+    [-HOLE, HOLE, 0.0],
+    [HOLE, HOLE, 0.0],
+    [HOLE, -HOLE, 0.0],
+    [-HOLE, -HOLE, 0.0],
+], np.float64)
 
 
 def load_frames(ep, imu, rig_wall_pair=True):
@@ -117,6 +123,44 @@ def pnp_points_all(idx, imgp, K, obj8=None):
     return sorted(out, key=lambda s: s[2])
 
 
+def pnp_apparent_inner_all(imgp, K):
+    """PnP branches for apparent TL,TR,BR,BL aperture corners."""
+    image = np.ascontiguousarray(imgp, np.float64).reshape(-1, 1, 2)
+    try:
+        _count, rvecs, tvecs, _errors = cv2.solvePnPGeneric(
+            OBJ_APPARENT_INNER,
+            image,
+            K,
+            None,
+            flags=cv2.SOLVEPNP_IPPE_SQUARE,
+        )
+    except cv2.error:
+        return []
+    solutions = []
+    for rvec, tvec in zip(rvecs, tvecs):
+        try:
+            rvec, tvec = cv2.solvePnPRefineLM(
+                OBJ_APPARENT_INNER,
+                image,
+                K,
+                None,
+                rvec,
+                tvec,
+            )
+        except cv2.error:
+            continue
+        translation = np.asarray(tvec, np.float64).reshape(3)
+        if not np.isfinite(translation).all() or translation[2] <= 0.0:
+            continue
+        projected, _ = cv2.projectPoints(
+            OBJ_APPARENT_INNER, rvec, tvec, K, None
+        )
+        residual = projected.reshape(4, 2) - image.reshape(4, 2)
+        rms = float(np.sqrt(np.mean(np.sum(residual * residual, axis=1))))
+        solutions.append((translation, rms))
+    return sorted(solutions, key=lambda solution: solution[1])
+
+
 def pnp_gate_all(det, K):
     """All refined IPPE branches for an 8-corner detection:
     [(R_g2c, t, rms), ...] sorted by rms."""
@@ -189,6 +233,60 @@ def main():
                          "corners for the EKF pass")
     ap.add_argument("--ckpt", default=str(
         REPO / "data/models/gatenet_v6wsl_best.pt"))
+    ap.add_argument(
+        "--corner-refine-ckpt", default=None,
+        help=(
+            "optional second GateNet: keep primary checkpoint classes and "
+            "availability, but snap accepted peaks to nearby second-model "
+            "locations"
+        ),
+    )
+    ap.add_argument(
+        "--corner-refine-radius", type=float, default=2.0,
+        help="maximum pixel distance for second-model peak snapping",
+    )
+    ap.add_argument(
+        "--crop-gatenet-ckpt", default=None,
+        help="optional instance-aware V11 crop-corner checkpoint",
+    )
+    ap.add_argument(
+        "--crop-proposal-ckpt", default=None,
+        help="YOLO gate proposal checkpoint required by crop V11",
+    )
+    ap.add_argument(
+        "--crop-proposal-thresh", type=float, default=0.05,
+        help="minimum YOLO proposal confidence for crop V11",
+    )
+    ap.add_argument(
+        "--crop-proposal-padding", type=float, default=2.6,
+        help="crop side divided by proposal-box side",
+    )
+    ap.add_argument(
+        "--crop-v11-primary", action="store_true",
+        help=(
+            "use robust inner-corner V11 observations when all four "
+            "survive map-prior gating; otherwise fall back to full-frame V7"
+        ),
+    )
+    ap.add_argument(
+        "--crop-v11-position-pins", action="store_true",
+        help=(
+            "keep the V7+V10 corner EKF and add rate-limited V11 aperture-PnP "
+            "position measurements using gyro attitude"
+        ),
+    )
+    ap.add_argument(
+        "--crop-v11-pin-interval", type=float, default=0.25,
+        help="minimum seconds between accepted V11 position measurements",
+    )
+    ap.add_argument(
+        "--crop-v11-inference-interval", type=float, default=0.10,
+        help=(
+            "minimum seconds between V11 crop inference passes; the default "
+            "runs the expensive fallback at 10 Hz while V7+V10 remains the "
+            "per-frame tracker"
+        ),
+    )
     ap.add_argument("--dump-obs", default=None,
                     help="npz path: per-frame single-gate PnP observations "
                          "in gyro-chain world frame (for the joint SLAM "
@@ -243,6 +341,14 @@ def main():
                          "translation/velocity only; attitude remains the "
                          "pure IMU gyro integration")
     args = ap.parse_args()
+    if bool(args.crop_gatenet_ckpt) != bool(args.crop_proposal_ckpt):
+        ap.error(
+            "--crop-gatenet-ckpt and --crop-proposal-ckpt are required together"
+        )
+    if (
+        args.crop_v11_primary or args.crop_v11_position_pins
+    ) and not args.crop_gatenet_ckpt:
+        ap.error("crop V11 runtime modes require crop V11 checkpoints")
     args.mirror_e = not args.no_mirror
     ep = Path(args.episode_dir)
 
@@ -408,6 +514,11 @@ def main():
              "gates": gates}, indent=2))
         print(f"runtime map -> {args.write_runtime_map}")
     gate_world = [np.concatenate(gate_quads_world_vq2(g)) for g in gates]
+    outer_world_keys = {
+        tuple(np.round(corner, 6))
+        for gate_corners in gate_world
+        for corner in gate_corners[4:8]
+    }
     gate_R = [Rotation.from_quat([g["quat_wxyz"][1], g["quat_wxyz"][2],
                                   g["quat_wxyz"][3], g["quat_wxyz"][0]]
                                  ).as_matrix() for g in gates]
@@ -450,6 +561,7 @@ def main():
     # corner source: GateNet v6 (sub-pixel, transfers to VQ2) unless
     # --classical. Classical corners on VQ2 neon gates are 5-15px noisy.
     net = None
+    refine_net = None
     if not args.classical:
         import torch
         from aigp.vision.model import GateNet
@@ -462,19 +574,294 @@ def main():
         print(f"GateNet corners: {Path(args.ckpt).name} "
               f"(epoch {ck['epoch']}) on {dev}")
 
+        if args.corner_refine_ckpt:
+            refine_ck = torch.load(
+                args.corner_refine_ckpt, map_location=dev,
+                weights_only=False,
+            )
+            refine_net = GateNet().to(dev)
+            refine_net.load_state_dict(refine_ck["model"])
+            refine_net.eval()
+            print(
+                f"corner refiner: {Path(args.corner_refine_ckpt).name} "
+                f"(epoch {refine_ck['epoch']}, "
+                f"radius {args.corner_refine_radius:.1f}px)"
+            )
+
+        def run_corner_net(model, tensor):
+            with torch.no_grad(), torch.autocast(
+                    "cuda", dtype=torch.float16, enabled=dev == "cuda"):
+                output = model(tensor)
+            return decode_corners(
+                output["hm"][0].float().cpu(),
+                output["off"][0].float().cpu(),
+                thresh=args.thresh,
+            )
+
         def net_peaks(bgr):
             orange = orange_channel(bgr)
             x = np.concatenate([bgr.astype(np.float32) / 255.0,
                                 orange[..., None]], 2).transpose(2, 0, 1)
             xt = torch.from_numpy(x).unsqueeze(0).to(dev)
-            with torch.no_grad(), torch.autocast(
-                    "cuda", dtype=torch.float16, enabled=dev == "cuda"):
-                o = net(xt)
-            return decode_corners(o["hm"][0].float().cpu(),
-                                  o["off"][0].float().cpu(),
-                                  thresh=args.thresh)
+            primary = run_corner_net(net, xt)
+            if refine_net is None:
+                return primary
+            refined = run_corner_net(refine_net, xt)
+            snapped = []
+            radius = args.corner_refine_radius
+            for corner_class, class_peaks in enumerate(primary):
+                ring = range(0, 4) if corner_class < 4 else range(4, 8)
+                candidates = [
+                    point for refine_class in ring
+                    for point in refined[refine_class]
+                ]
+                class_snapped = []
+                for u, v, score in class_peaks:
+                    nearest = min(
+                        candidates,
+                        key=lambda point: np.hypot(
+                            point[0] - u, point[1] - v
+                        ),
+                        default=None,
+                    )
+                    if nearest is not None and np.hypot(
+                            nearest[0] - u, nearest[1] - v) <= radius:
+                        class_snapped.append(
+                            (nearest[0], nearest[1], score)
+                        )
+                    else:
+                        class_snapped.append((u, v, score))
+                snapped.append(class_snapped)
+            return snapped
 
-    ekf = GateEKF(K, R_cb, sigma_px=1.5 if net is not None else 5.0)
+    crop_net = None
+    crop_proposal = None
+    if args.crop_gatenet_ckpt:
+        import torch
+        from ultralytics import YOLO
+        from aigp.vision.crop_gate import (
+            CropGateNet,
+            decode_crop_corners,
+            orange_channel as crop_orange_channel,
+            proposal_channel,
+            warp_gate_crop,
+        )
+
+        crop_dev = "cuda" if torch.cuda.is_available() else "cpu"
+        crop_ck = torch.load(
+            args.crop_gatenet_ckpt,
+            map_location=crop_dev,
+            weights_only=False,
+        )
+        crop_net = CropGateNet().to(crop_dev)
+        crop_net.load_state_dict(crop_ck["model"])
+        crop_net.eval()
+        crop_size = int(crop_ck.get("crop_size", 256))
+        crop_prior = proposal_channel(crop_size)
+        crop_proposal = YOLO(args.crop_proposal_ckpt)
+        proposal_dev = crop_dev
+        if crop_dev == "cuda":
+            try:
+                from torchvision.ops import nms
+
+                nms(
+                    torch.zeros((1, 4), device="cuda"),
+                    torch.ones(1, device="cuda"),
+                    0.5,
+                )
+            except (NotImplementedError, RuntimeError):
+                proposal_dev = "cpu"
+                print("crop proposal CUDA NMS unavailable; YOLO using CPU")
+        print(
+            f"crop V11: {Path(args.crop_gatenet_ckpt).name} "
+            f"(epoch {crop_ck['epoch']}) + "
+            f"{Path(args.crop_proposal_ckpt).name} on {crop_dev}"
+        )
+
+        d4_mappings = []
+        d4_base = np.arange(4)
+        for d4_shift in range(4):
+            d4_mappings.append(
+                tuple(int(value) for value in np.roll(d4_base, d4_shift))
+            )
+            d4_mappings.append(
+                tuple(
+                    int(value)
+                    for value in np.roll(d4_base[::-1], d4_shift)
+                )
+            )
+        d4_mappings = list(dict.fromkeys(d4_mappings))
+
+        @torch.inference_mode()
+        def crop_v11_observations(bgr, gate_indices):
+            result = crop_proposal.predict(
+                bgr,
+                conf=args.crop_proposal_thresh,
+                imgsz=640,
+                verbose=False,
+                device=proposal_dev,
+            )[0]
+            if result.boxes is None or len(result.boxes) == 0:
+                return [], [], {}, []
+            boxes = result.boxes.xyxy.cpu().numpy()
+            gate_predictions = {}
+            assignments = []
+            for priority, gate_index in enumerate(gate_indices):
+                projected = []
+                for physical_corner in range(4):
+                    pixel, _camera_point = ekf.predict_pixel(
+                        gate_world[gate_index][physical_corner]
+                    )
+                    if pixel is None:
+                        projected = []
+                        break
+                    projected.append(pixel)
+                if len(projected) != 4:
+                    continue
+                projected = np.asarray(projected, np.float32)
+                expected_center = projected.mean(axis=0)
+                expected_span = float(max(
+                    np.ptp(projected[:, 0]),
+                    np.ptp(projected[:, 1]),
+                ))
+                association_radius = max(30.0, 1.25 * expected_span)
+                candidates = []
+                for box_index, box in enumerate(boxes):
+                    box_center = np.asarray([
+                        (box[0] + box[2]) * 0.5,
+                        (box[1] + box[3]) * 0.5,
+                    ], np.float32)
+                    distance = float(np.linalg.norm(
+                        box_center - expected_center
+                    ))
+                    if distance <= association_radius:
+                        candidates.append(
+                            (distance, box_index, box, box_center)
+                        )
+                if candidates:
+                    gate_predictions[gate_index] = (
+                        projected,
+                        expected_center,
+                        expected_span,
+                    )
+                    best = min(candidates, key=lambda row: row[0])
+                    assignments.append((priority, *best, gate_index))
+            assignments.sort(key=lambda row: (row[0], row[1]))
+            used_boxes = set()
+            observations = []
+            innovations = []
+            matched = {}
+            position_pin_candidates = []
+            for (
+                _priority,
+                _proposal_distance,
+                box_index,
+                box,
+                box_center,
+                gate_index,
+            ) in assignments:
+                if box_index in used_boxes:
+                    continue
+                used_boxes.add(box_index)
+                projected, expected_center, expected_span = (
+                    gate_predictions[gate_index]
+                )
+                proposal_span = float(max(
+                    box[2] - box[0], box[3] - box[1]
+                ))
+                side = max(
+                    18.0,
+                    proposal_span * args.crop_proposal_padding,
+                )
+                crop, _forward, inverse = warp_gate_crop(
+                    bgr, box_center, side, crop_size
+                )
+                orange = crop_orange_channel(crop)
+                network_input = np.concatenate([
+                    crop.astype(np.float32) / 255.0,
+                    orange[..., None],
+                    crop_prior[..., None],
+                ], axis=2).transpose(2, 0, 1)
+                tensor = torch.from_numpy(network_input).unsqueeze(0).to(
+                    crop_dev
+                )
+                with torch.autocast(
+                    "cuda",
+                    dtype=torch.float16,
+                    enabled=crop_dev == "cuda",
+                ):
+                    output = crop_net(tensor)
+                decoded = decode_crop_corners(
+                    output,
+                    crop_size,
+                    inverse_affine=inverse,
+                )
+                measured = np.asarray(
+                    decoded["corners"], np.float32
+                )[:4]
+                accepted = (
+                    np.asarray(decoded["scores"])[:4] >= 0.05
+                ) & (
+                    np.asarray(decoded["visibility"])[:4] >= 0.20
+                ) & (
+                    float(decoded["presence"]) >= 0.20
+                )
+                center_radius = max(15.0, 0.35 * expected_span)
+                if np.linalg.norm(
+                    measured.mean(axis=0) - expected_center
+                ) > center_radius:
+                    continue
+                corner_radius = max(16.0, 0.25 * expected_span)
+                hypotheses = []
+                for mapping in d4_mappings:
+                    rows = []
+                    cost = 0.0
+                    for apparent_corner, physical_corner in enumerate(mapping):
+                        if not accepted[apparent_corner]:
+                            continue
+                        distance = float(np.linalg.norm(
+                            measured[apparent_corner]
+                            - projected[physical_corner]
+                        ))
+                        if distance <= corner_radius:
+                            rows.append((
+                                gate_world[gate_index][physical_corner],
+                                measured[apparent_corner],
+                                distance,
+                            ))
+                            cost += distance
+                    hypotheses.append((len(rows), cost, rows))
+                count, cost, rows = min(
+                    hypotheses,
+                    key=lambda hypothesis: (
+                        -hypothesis[0], hypothesis[1]
+                    ),
+                )
+                if count < 2:
+                    continue
+                for world_corner, pixel, distance in rows:
+                    observations.append((world_corner, pixel))
+                    innovations.append(distance)
+                matched[gate_index] = (count, cost)
+                if count == 4 and accepted.all():
+                    position_pin_candidates.append((
+                        gate_index,
+                        measured.copy(),
+                        expected_span,
+                        float(decoded["presence"]),
+                    ))
+            return (
+                observations,
+                innovations,
+                matched,
+                position_pin_candidates,
+            )
+
+    ekf = GateEKF(
+        K,
+        R_cb,
+        sigma_px=1.5 if net is not None or crop_net is not None else 5.0,
+    )
     q0 = R0.as_quat()
     ekf.init_state(np.zeros(3), np.zeros(3),
                    [q0[3], q0[0], q0[1], q0[2]], t_start)
@@ -489,6 +876,9 @@ def main():
     stats = []   # (t, n_fused, innov_rms, sigma_p, n_clean)
     relocs = []  # (t, gate, att_angle_deg, pnp_rms, p_before, p_new)
     last_pin = None  # (t, gate, p_new) for pin-pair velocity fixes
+    last_crop_position_pin = -np.inf
+    last_crop_inference = -np.inf
+    crop_position_rows = []
     edge_checks = []  # (t, pinned_gate, other_gate, pixel_err)
     pair_rows = []   # (t, active_gate, dp_local A->B)
     yaw_rows = []    # (gate_id, observed local yaw deg)
@@ -594,6 +984,7 @@ def main():
             clean_dets = []
             peaks = None
             matched_g = {}
+            crop_pin_candidates = []
             sig_p = float(np.sqrt(max(np.trace(ekf.P[0:3, 0:3]), 0)))
             if net is not None and not args.pins_only:
                 peaks = net_peaks(img)
@@ -641,6 +1032,58 @@ def main():
                         flip_votes.setdefault(gi, []).append(pick)
                         matched_g[gi] = (len(cand_obs[pick]),
                                          cand_cost[pick])
+            if (
+                crop_net is not None
+                and not args.pins_only
+                and t_imu - last_crop_inference
+                >= args.crop_v11_inference_interval
+            ):
+                last_crop_inference = t_imu
+                active_crop_gate = active_gate(t_imu)
+                crop_gate_indices = [
+                    gate_index
+                    for gate_index in (
+                        active_crop_gate,
+                        active_crop_gate - 1,
+                        active_crop_gate + 1,
+                    )
+                    if 0 <= gate_index < min(17, len(gates))
+                    and (
+                        args.max_fuse_gate is None
+                        or gate_index <= args.max_fuse_gate
+                    )
+                ]
+                (
+                    crop_obs,
+                    crop_innovs,
+                    crop_matched,
+                    crop_pin_candidates,
+                ) = (
+                    crop_v11_observations(img, crop_gate_indices)
+                )
+                if crop_matched:
+                    n_clean = max(n_clean, 1)
+                    matched_g.update(crop_matched)
+                if args.crop_v11_primary and len(crop_obs) >= 4:
+                    # V11 owns the grouped inner aperture. Preserve only V7's
+                    # outer-ring constraints so the EKF keeps the wider
+                    # geometric baseline without duplicating/conflicting
+                    # inner measurements.
+                    v7_outer = [
+                        (row, innovation)
+                        for row, innovation in zip(obs, innovs)
+                        if tuple(np.round(row[0], 6)) in outer_world_keys
+                    ]
+                    obs = crop_obs + [row for row, _ in v7_outer]
+                    innovs = crop_innovs + [
+                        innovation for _, innovation in v7_outer
+                    ]
+                elif (
+                    not args.crop_v11_primary
+                    and not args.crop_v11_position_pins
+                ):
+                    obs.extend(crop_obs)
+                    innovs.extend(crop_innovs)
             for det in dets:
                 # gate sanity: concentric inner+outer with the spec area
                 # ratio ((1.35/0.75)^2 = 3.24) — kills the gold "Station"
@@ -979,6 +1422,111 @@ def main():
                     last_fuse[gi_f] = t_imu
                     if nm_f >= 5 and sig_p < 0.06:
                         strong_fuse[gi_f] = t_imu
+
+            if (
+                args.crop_v11_position_pins
+                and not n
+                and crop_pin_candidates
+                and t_imu - last_crop_position_pin
+                >= args.crop_v11_pin_interval
+            ):
+                R_wc_crop = ekf.q.as_matrix() @ R_cb.T
+                solved_crop_pins = []
+                for (
+                    gate_index,
+                    apparent_inner,
+                    _expected_span,
+                    presence_probability,
+                ) in crop_pin_candidates:
+                    for translation_cg, pnp_rms in pnp_apparent_inner_all(
+                        apparent_inner, K
+                    ):
+                        if pnp_rms > 3.0:
+                            continue
+                        position_measurement = np.asarray(
+                            gates[gate_index]["pos"], float
+                        ) - R_wc_crop @ translation_cg
+                        jump = float(np.linalg.norm(
+                            position_measurement - ekf.p
+                        ))
+                        solved_crop_pins.append((
+                            jump,
+                            pnp_rms,
+                            -presence_probability,
+                            gate_index,
+                            position_measurement,
+                            float(np.linalg.norm(translation_cg)),
+                        ))
+                if solved_crop_pins:
+                    (
+                        jump,
+                        pnp_rms,
+                        _negative_presence,
+                        gate_index,
+                        position_measurement,
+                        depth,
+                    ) = min(
+                        solved_crop_pins,
+                        key=lambda row: (row[0], row[1], row[2]),
+                    )
+                    current_sigma = float(np.sqrt(max(
+                        np.trace(ekf.P[0:3, 0:3]), 0.0
+                    )))
+                    maximum_jump = max(
+                        0.60,
+                        min(1.50, 0.35 + 2.5 * current_sigma),
+                    )
+                    if jump <= maximum_jump:
+                        measurement_sigma = float(np.clip(
+                            0.12 + 0.020 * depth, 0.15, 0.45
+                        ))
+                        measurement_matrix = np.zeros((3, 9), float)
+                        measurement_matrix[:, 0:3] = np.eye(3)
+                        measurement_noise = (
+                            np.eye(3) * measurement_sigma**2
+                        )
+                        innovation_covariance = (
+                            measurement_matrix
+                            @ ekf.P
+                            @ measurement_matrix.T
+                            + measurement_noise
+                        )
+                        kalman_gain = (
+                            ekf.P
+                            @ measurement_matrix.T
+                            @ np.linalg.inv(innovation_covariance)
+                        )
+                        if args.gyro_attitude:
+                            kalman_gain[6:9, :] = 0.0
+                        correction = kalman_gain @ (
+                            position_measurement - ekf.p
+                        )
+                        ekf.p += correction[0:3]
+                        ekf.v += correction[3:6]
+                        identity = np.eye(9)
+                        residual_matrix = (
+                            identity - kalman_gain @ measurement_matrix
+                        )
+                        ekf.P = (
+                            residual_matrix
+                            @ ekf.P
+                            @ residual_matrix.T
+                            + kalman_gain
+                            @ measurement_noise
+                            @ kalman_gain.T
+                        )
+                        ekf.P = 0.5 * (ekf.P + ekf.P.T)
+                        last_crop_position_pin = t_imu
+                        last_upd = t_imu
+                        n = max(n, 4)
+                        crop_position_rows.append((
+                            t_imu - t_start,
+                            gate_index,
+                            jump,
+                            pnp_rms,
+                            measurement_sigma,
+                            depth,
+                        ))
 
             # Generic recovery for fast/blurred approaches: when classified
             # V7 corners fail the batch gate, use a complete clean gate's PnP
@@ -1442,6 +1990,21 @@ def main():
             pp = np.asarray(pass_pin_rows, float)
             print(f"  pre-pin error median/p90 {np.median(pp[:,2]):.2f}/"
                   f"{np.percentile(pp[:,2],90):.2f}m")
+    if args.crop_v11_position_pins:
+        print(f"crop V11 position pins: {len(crop_position_rows)}")
+        if crop_position_rows:
+            cp = np.asarray(crop_position_rows, float)
+            counts = {
+                int(g): int((cp[:, 1] == g).sum())
+                for g in np.unique(cp[:, 1]).astype(int)
+            }
+            print(f"  pins per gate: {counts}")
+            print(
+                f"  jump median/p90 {np.median(cp[:,2]):.2f}/"
+                f"{np.percentile(cp[:,2],90):.2f}m, "
+                f"PnP rms median {np.median(cp[:,3]):.2f}px, "
+                f"sigma median {np.median(cp[:,4])*100:.1f}cm"
+            )
     if args.gyro_attitude:
         print(f"gyro-attitude translation pins: "
               f"{len(gyro_translation_pins)}")

@@ -48,16 +48,18 @@ look-away vision gaps degrade until relocalization fires.
 
 The short version is:
 
-> GateNet V7 finds the gate's eight corners in image pixels. The relative
-> gate map says where those same corners exist in 3D metres. The IMU tracks
-> motion between camera observations. The EKF combines all three into a
-> continuous local-course pose and velocity estimate.
+> GateNet V7 supplies stable gate/corner identity. A clean-data GateNet V10
+> refines only nearby corner pixels without being allowed to invent a gate or
+> change its identity. The relative map supplies the matching 3D corners, the
+> IMU tracks motion between images, and the EKF combines them into continuous
+> local-course pose and velocity.
 
 The generalized runtime uses camera images, gyroscope, accelerometer,
-official race-status/gate events, camera calibration, GateNet V7, and a
-relative course map. It does **not** load human click journals, hand-labelled
-corners, a pose trace from another flight, VQ1 odometry, VQ2 odometry,
-per-video handoff times, or future gate-pass smoothing.
+official race-status/gate events, camera calibration, GateNet V7, the
+optional V10 corner refiner, and a relative course map. It does **not** load
+human click journals, hand-labelled corners, a pose trace from another
+flight, VQ1 odometry, VQ2 odometry, per-video handoff times, or future
+gate-pass smoothing.
 
 ### What the labels were for
 
@@ -72,10 +74,46 @@ corners. Every gate has eight corner classes:
 Most initial labels were generated automatically in VQ1. Exact VQ1 drone
 pose, camera calibration, gate geometry, and gate positions let us project
 the 3D gate corners into every image without manually clicking each frame.
-GateNet V7 was later fine-tuned with verified VQ2 temporal self-labels,
-including close, partial, fast, and blue-path-obscured views. The V7
-checkpoint's held-out corner metrics are approximately 0.71 px median and
-1.80 px p90.
+GateNet V7 was trained on VQ1 plus the original VQ2 labels; it did **not**
+use the later temporal-label set. V8 then added a large V7-self-labelled
+image lake, and V9 added temporal labels on top of that. Strict held-out and
+human-click evaluation found neither to be a reliable replacement for V7.
+
+GateNet V10 starts from V7 and trains only on clean VQ1 labels, verified VQ2
+labels, and verified temporal labels. It has much higher VQ2 candidate recall,
+but using it alone can change physical corner classes and destabilize the
+existing EKF. The deployed hybrid therefore keeps V7 as the authority and
+allows V10 to move an accepted V7 peak by at most 2 pixels, within the same
+inner or outer corner ring. V10 cannot add a missing V7 peak, select a gate,
+or change the V7 corner class.
+
+**CropGateNet V11** handles the remaining long-range and instance-mixing
+problem. A high-recall YOLO model proposes a gate region; the region is padded,
+resampled to 256×256, and encoded as RGB, orange likelihood, and a Gaussian
+proposal-centre channel. V11 predicts one grouped gate instance:
+
+- Four apparent-image aperture corners in TL, TR, BR, BL order.
+- Four grouped outer-panel corners.
+- Per-corner visibility and uncertainty.
+- Gate-presence confidence.
+
+V11 trained on 77,985 positive crops and 15,597 hard negatives. Validation
+uses 30,879 detector-error crop variants from complete held-out sessions.
+Training augmentation includes proposal translation/scale errors, motion and
+Gaussian blur, noise, exposure changes, clipping, and synthetic pulsing blue
+path occlusion.
+
+On 101 independent human-click frames, V11 epoch 13 with robust map-prior
+association achieves 90.1% PnP availability and 6.33/12.92/27.88 cm
+median/p90/p99 position error. The V7+V10 full-frame champion scores 84.2%
+and 10.24/22.71/68.64 cm on the same ruler.
+
+Dense V11 correction is intentionally **not** deployed. Repeated planar PnP
+measurements can carry a small systematic bias and drag an otherwise locked
+filter. Runtime uses V11 only when the normal V7+V10 corner update fails. A
+complete four-corner V11 aperture is solved with PnP, checked against the
+projected map gate and inertial continuity, rate-limited, and applied as a
+conservative position measurement while gyro attitude remains unchanged.
 
 GateNet has auxiliary global pose, velocity, next-gate, and gate-class heads,
 but the current VQ2 localizer does not trust those heads for its world pose.
@@ -141,18 +179,21 @@ compensates by about 20 degrees, making the image look level. These are still
 separate transforms: gravity initializes body attitude and `R_cb` in
 `data/calib/calib.json` describes the body-to-camera mounting rotation.
 
-### GateNet V7 corner measurements
+### Stable V7 identity plus V10 corner refinement
 
 Each 640×360 frame becomes a four-channel tensor: normalized RGB plus a soft
-orange-likelihood channel. V7 returns eight stride-4 corner heatmaps and
-per-class subpixel offsets. It therefore produces geometric keypoints rather
-than a YOLO-style bounding box.
+orange-likelihood channel. Both networks return eight stride-4 corner
+heatmaps and per-class subpixel offsets, producing geometric keypoints rather
+than YOLO-style bounding boxes. V7 establishes candidate availability and
+corner class. For each accepted V7 peak, V10 may snap its location to the
+nearest V10 peak in the same inner/outer ring only when it is within 2 pixels.
 
 At each frame, the EKF projects the mapped 3D corners into the image using its
 current pose prediction. The official active-gate event limits association to
 the previous, active, and next gate. For each candidate, the matcher:
 
-1. Looks near each projected corner for a V7 peak of the same corner class.
+1. Looks near each projected corner for a V7-authorized peak of the same
+   corner class, optionally sharpened by V10.
 2. Tests both possible 180-degree square orientations.
 3. Keeps the orientation with more matches and lower pixel error.
 4. Rejects measurements that are inconsistent with the predicted pose and
@@ -185,21 +226,22 @@ rotate gravity incorrectly, and corrupt acceleration, velocity, and position.
 
 At extreme range, during motion blur, or when the gate fills the image, V7
 may temporarily return too few correctly classified corners. If no V7 corner
-update succeeds for about 0.15 seconds, the runtime can use a complete clean
-classical gate detection:
+update succeeds, the runtime can use a complete V11 aperture observation:
 
-1. Require concentric inner and outer quadrilaterals with the expected area
-   ratio.
-2. Solve camera-to-gate translation with PnP.
-3. Use official race status for gate identity and the map for gate position.
-4. Compute body position as
+1. Use high-recall YOLO only to propose a padded image crop.
+2. Let V11 recover the grouped inner aperture and reject uncertain corners.
+3. Require all four corners and robust agreement with the projected map gate.
+4. Solve camera-to-gate translation with PnP.
+5. Use official race status for gate identity and the map for gate position.
+6. Compute body position as
    `p_body = p_gate - R_world_camera @ t_camera_gate`.
-5. Keep gyro attitude unchanged.
-6. Reject the update if it would cause an implausible multi-metre jump from
+7. Keep gyro attitude unchanged.
+8. Reject the update if it would cause an implausible jump from
    the inertial prediction.
 
-This fallback handles brief V7 starvation without allowing a previous or
-future visible gate to teleport the filter.
+V11 inference is rate-limited to 10 Hz by default and accepted position pins
+are limited to 4 Hz. This fallback handles brief V7 starvation without
+allowing a previous or future visible gate to teleport the filter.
 
 ### Why sparse sightings can still work
 
@@ -210,18 +252,19 @@ can therefore remain localized without detecting a gate on every frame,
 although the current replays fuse V7 corners much more frequently than once
 per 30 frames.
 
-Current label-free replay validation using the same configuration on two
-different VQ2 recordings:
+Current label-free replay validation using V7+V10 with sparse V11 fallback on
+two different VQ2 recordings:
 
-- Clean no-contact run: 87.5% of frames fused V7 corners, 2.08 px median
-  innovation, 4.7 cm median reported position sigma.
-- Independent `rc_20260724_003101` run: 76.8% fused, 3.29 px median
-  innovation, 5.1 cm median reported position sigma.
+- Clean no-contact run: 93.2% of frames fused corners, 2.56 px median
+  innovation, 3.3 cm median / 6.2 cm p90 reported position sigma. V7 alone
+  fused 87.5% with 4.7/9.0 cm sigma.
+- Independent `rc_20260724_003101` run: 82.8% fused, 4.00 px median
+  innovation, 4.4 cm median / 8.7 cm p90 sigma. V7 alone fused 76.8% with
+  5.1/12.5 cm sigma.
 
-Held-out human clicks were used only for evaluation, not filtering:
-
-- Clean no-contact run: 2.67 px median / 15.74 px p90 gate-centre error.
-- `003101`: 5.01 px median / 25.93 px p90 gate-centre error.
+The 10 Hz sparse fallback fired only 6 times on the clean lap and 4 times on
+`003101`; V7+V10 remains authoritative on every normal frame. Human clicks
+are used only for evaluation, never as runtime filter inputs.
 
 These covariance values are filter confidence rather than absolute
 ground-truth guarantees, so visual overlays and independent click residuals
@@ -245,7 +288,10 @@ relative map re-anchored to this episode
 IMU continuously propagates pose and velocity
                  |
                  v
-GateNet V7 predicts eight subpixel gate corners
+GateNet V7 predicts stable candidate identity
+                 |
+                 v
+V10 may refine each accepted location by <=2 px
                  |
                  v
 race status narrows map association
@@ -254,7 +300,7 @@ race status narrows map association
 matched map/image corners correct EKF position and velocity
                  |
                  v
-strict full-gate PnP fallback bridges rare V7 dropouts
+YOLO proposal + V11 aperture PnP bridges rare V7 dropouts
                  |
                  v
 continuous local-course pose, velocity, and uncertainty
@@ -271,5 +317,24 @@ different relative map, not a retrained corner detector.
 `scripts/train_net.py` — from-scratch recipe: 45 epochs, batch 16, lr 3e-4
 cosine, zoom-crop augmentation (pose losses masked on augmented samples),
 fp32 focal loss. `--path-map old::new` allows training on a different machine
-from the recorder. The VQ2 corner/EKF pipeline uses the tracked champion
-checkpoint `data/models/gatenet_v7_best.pt`.
+from the recorder. The VQ2 corner/EKF pipeline keeps
+`data/models/gatenet_v7_best.pt` as the identity authority and optionally
+uses the clean-data V10 checkpoint as a tightly bounded location refiner:
+
+```powershell
+.venv-train\Scripts\python.exe scripts\vq2_align.py `
+  --episode-dir <episode> `
+  --map-json data\vq2_map_rawshift.json `
+  --ckpt data\models\gatenet_v7_best.pt `
+  --corner-refine-ckpt data\models\gatenet_v10strict_ep0.pt `
+  --corner-refine-radius 2 `
+  --crop-gatenet-ckpt data\models\crop_gatenet_v11crop_ep13.pt `
+  --crop-proposal-ckpt data\models\gatepose_v5vq2b_best.pt `
+  --crop-proposal-thresh 0.05 `
+  --crop-proposal-padding 2.6 `
+  --crop-v11-position-pins `
+  --crop-v11-inference-interval 0.10 `
+  --crop-v11-pin-interval 0.25 `
+  --thresh 0.12 `
+  --gyro-attitude
+```
