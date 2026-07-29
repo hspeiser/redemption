@@ -224,6 +224,13 @@ def main():
                     help="disable corner updates; dense PnP pins + IMU "
                          "dead-reckoning between them measure the map's "
                          "gate-to-gate geometry -> anchor-yaw fit")
+    ap.add_argument("--max-fuse-gate", type=int, default=None,
+                    help="diagnostic: do not fuse or relocalize from gates "
+                         "above this race index")
+    ap.add_argument("--direct-position-pins", action="store_true",
+                    help="use gate PnP for direct world position/velocity "
+                         "pins with pure-gyro attitude; disables corner-EKF "
+                         "attitude corrections and legacy relocalization")
     args = ap.parse_args()
     args.mirror_e = not args.no_mirror
     ep = Path(args.episode_dir)
@@ -436,6 +443,14 @@ def main():
     last_fuse = {}        # gate -> last time its corners were fused
     strong_fuse = {}      # gate -> last STRONG fuse (>=5 corners, tight sig)
     tl_rows = []          # temporal-transfer label rows
+    pin_hist = {}         # gate -> recent (time, measured body position)
+    direct_pin_rows = []  # (time, gate, jump, rms, depth)
+    pending_pin = {}      # gate -> (last_time, last_position, count)
+    pass_pin_rows = []    # (time, passed_gate, pre-reset error)
+    last_ag_pin = None
+    last_ag_change_t = t_start
+    last_pass_pin = None  # (time, pre-reset position error)
+    last_pass_event = None  # (time, gate)
     last_upd = t_start
     prev_t = None
     for i in range(len(imu)):
@@ -449,12 +464,70 @@ def main():
                 w_b * (t_imu - t_gyro)).as_matrix()
         t_gyro = t_imu
         ekf.propagate(t_imu, imu[i, 1:4], imu[i, 4:7])
+        if args.direct_position_pins:
+            ag_now = active_gate(t_imu)
+            if last_ag_pin is not None and ag_now == last_ag_pin + 1:
+                # The official event means the drone has just crossed
+                # last_ag_pin. Its centre is therefore an authoritative
+                # sub-metre position landmark even when vision was absent.
+                p_gate_pass = np.asarray(gates[last_ag_pin]["pos"], float)
+                err_pass = ekf.p - p_gate_pass
+                if last_pass_pin is not None and \
+                        np.linalg.norm(err_pass) < 6.0 and \
+                        np.linalg.norm(last_pass_pin[1]) < 6.0:
+                    dt_pass = t_imu - last_pass_pin[0]
+                    if 0.3 < dt_pass < 8.0:
+                        v_err = (err_pass - last_pass_pin[1]) / dt_pass
+                        if np.linalg.norm(v_err) < 12.0:
+                            ekf.v -= 0.8 * v_err
+                # Prefer velocity measured from repeated PnP positions while
+                # approaching the gate. Fall back to the authoritative
+                # gate-to-gate displacement/time average.
+                v_reset = None
+                hp_pass = pin_hist.get(last_ag_pin, [])
+                if len(hp_pass) >= 4:
+                    thp = np.array([q0[0] for q0 in hp_pass])
+                    php = np.array([q0[1] for q0 in hp_pass])
+                    dthp = np.diff(thp)
+                    mhp = (dthp > 0.01) & (dthp < 0.15)
+                    if mhp.any():
+                        vvp = np.diff(php, axis=0)[mhp] / dthp[mhp, None]
+                        vvp = vvp[np.linalg.norm(vvp, axis=1) < 25.0]
+                        if len(vvp) >= 2:
+                            v_reset = np.median(vvp, axis=0)
+                if v_reset is None and last_pass_event is not None:
+                    dt_leg = t_imu - last_pass_event[0]
+                    if 0.3 < dt_leg < 8.0:
+                        p_prev = np.asarray(
+                            gates[last_pass_event[1]]["pos"], float)
+                        v_reset = (p_gate_pass - p_prev) / dt_leg
+                if v_reset is not None and np.linalg.norm(v_reset) < 25.0:
+                    ekf.v = v_reset
+                elif np.linalg.norm(ekf.v) > 18.0:
+                    ekf.v *= 18.0 / np.linalg.norm(ekf.v)
+                last_pass_pin = (t_imu, err_pass.copy())
+                last_pass_event = (t_imu, last_ag_pin)
+                ekf.p = p_gate_pass
+                ekf.P[0:3, :] = 0.0
+                ekf.P[:, 0:3] = 0.0
+                ekf.P[0:3, 0:3] = np.eye(3) * 0.45**2
+                ekf.P[3:6, 3:6] += np.eye(3) * 0.60**2
+                pass_pin_rows.append(
+                    (t_imu - t_start, last_ag_pin,
+                     float(np.linalg.norm(err_pass))))
+                last_ag_change_t = t_imu
+            if last_ag_pin is None or ag_now >= last_ag_pin or ag_now == 0:
+                last_ag_pin = ag_now
         while fi < len(frames) and frames[fi][0] <= t_imu:
             ts, path = frames[fi]
             fi += 1
             img = cv2.imread(str(path))
             if img is None:
                 continue
+            if args.direct_position_pins:
+                # Keep attitude map-independent. A tilted or mis-oriented
+                # gate must never rotate gravity into the translation state.
+                ekf.q = Rotation.from_matrix(R_gyro)
             dets = detect_gates(img, min_area=250)
             obs = []
             innovs = []
@@ -471,8 +544,11 @@ def main():
                 rad_n = float(np.clip(3 * K[0, 0] * sig_p / 6.0 + 20,
                                       25, 120))
                 FLIP = (1, 0, 3, 2, 5, 4, 7, 6)   # gate rotated 180 deg
-                for gi in [g for g in (ag_n - 1, ag_n, ag_n + 1)
-                           if 0 <= g < len(gates)]:
+                for gi in [
+                        g for g in (ag_n - 1, ag_n, ag_n + 1)
+                        if 0 <= g < len(gates)
+                        and (args.max_fuse_gate is None
+                             or g <= args.max_fuse_gate)]:
                     # some map gates are 180-flipped (spline heading vs
                     # facing): match under both orientations, keep better
                     cand_obs = {False: [], True: []}
@@ -530,8 +606,12 @@ def main():
                 dc = det["outer"].mean(0)
                 # nearest predicted gate among race-status candidates
                 ag = active_gate(t_imu)
-                cand = [g for g in (ag - 1, ag, ag + 1)
-                        if 0 <= g < len(gates)]
+                cand = [
+                    g for g in (ag - 1, ag, ag + 1)
+                    if 0 <= g < len(gates)
+                    and (args.max_fuse_gate is None
+                         or g <= args.max_fuse_gate)
+                ]
                 best_gi, best_d = None, 1e9
                 for gi in cand:
                     uvp, Xc = ekf.predict_pixel(np.asarray(gates[gi]["pos"]))
@@ -729,6 +809,97 @@ def main():
                             edge_checks.append((t_imu - t_start, ag, best_g,
                                                 best_e))
 
+            # Direct gate-relative position/velocity correction. PnP
+            # translation plus pure-gyro camera attitude gives body position
+            # without using the gate's map orientation:
+            #   p_body = p_gate - R_world_camera @ t_camera_gate
+            if args.direct_position_pins and peaks is not None and clean_dets \
+                    and t_imu - last_ag_change_t > 0.30:
+                agp = active_gate(t_imu)
+                # A low-RMS PnP fit says "this is a gate", not WHICH gate.
+                # The old largest-box rule repeatedly mistook the gate just
+                # crossed for the newly-active gate. Evaluate EVERY spatially
+                # separated gate detection and keep the active-gate solution
+                # whose implied camera position agrees with the pass-anchored
+                # inertial prediction. A previous/future gate is displaced by
+                # an entire map edge and therefore fails the 3.5 m gate.
+                sols_p = []
+                R_wc_pin = R_gyro @ R_cb.T
+                uv_expect = None
+                if 0 <= agp < min(17, len(gates)):
+                    uv_expect, _xc_expect = ekf.predict_pixel(
+                        np.asarray(gates[agp]["pos"], float))
+                for ddp in clean_dets:
+                    # The classical detector has already passed concentricity,
+                    # area-ratio and inner/outer checks. Its complete 8-corner
+                    # geometry is far more available than demanding six
+                    # correctly classed neural peaks (which yielded no pins
+                    # at all for gates 8-16).
+                    branches_p = pnp_gate_all(ddp, K)
+                    for _Rp, tcp, rmsp in branches_p:
+                        if rmsp >= 3.0 or not (
+                                0 <= agp < min(17, len(gates))):
+                            continue
+                        gp = agp
+                        pp = np.asarray(gates[gp]["pos"]) - R_wc_pin @ tcp
+                        jp = float(np.linalg.norm(pp - ekf.p))
+                        pixp = 0.0 if uv_expect is None else float(
+                            np.linalg.norm(ddp["outer"].mean(0) - uv_expect))
+                        # Position continuity is authoritative. Pixel bearing
+                        # only breaks ties between otherwise plausible gates.
+                        costp = jp + 0.001 * min(pixp, 500.0)
+                        depthp = float(np.linalg.norm(tcp))
+                        sols_p.append(
+                            (costp, jp, gp, pp, rmsp, depthp))
+                bestp = min(sols_p, key=lambda q0: q0[0]) \
+                    if sols_p else None
+                if bestp is not None:
+                    # Never "recover" from a large jump merely because the
+                    # same wrong gate is seen for several frames. Pass pins
+                    # bound each dead-reckoning leg, so skipping an uncertain
+                    # visual update is much safer than accepting a leg-sized
+                    # translation.
+                    accept_p = bestp[1] < 3.5
+                    if accept_p:
+                        _costp, jumpp, gp, ppin, rmsp, depthp = bestp
+                        pending_pin.pop(gp, None)
+                        hp = pin_hist.setdefault(gp, [])
+                        hp.append((ts, ppin.copy()))
+                        hp[:] = [(tp, pp) for tp, pp in hp
+                                 if ts - tp <= 0.45]
+
+                        # Settle to the landmark in a few frames while
+                        # suppressing single-frame planar-depth jitter.
+                        ekf.p = 0.20 * ekf.p + 0.80 * ppin
+
+                        # Fit velocity directly from recent world-position
+                        # pins. The old filter corrected position but carried
+                        # a 1-3 m/s velocity error into every later gate.
+                        if len(hp) >= 4 and hp[-1][0] - hp[0][0] >= 0.08:
+                            th = np.array([q0[0] for q0 in hp])
+                            ph = np.array([q0[1] for q0 in hp])
+                            dth = np.diff(th)
+                            good_dt = (dth > 0.01) & (dth < 0.15)
+                            if good_dt.any():
+                                vv = np.diff(ph, axis=0)[good_dt] / \
+                                    dth[good_dt, None]
+                                vv = vv[np.linalg.norm(vv, axis=1) < 25.0]
+                                if len(vv) >= 2:
+                                    vpin = np.median(vv, axis=0)
+                                    ekf.v = 0.55 * ekf.v + 0.45 * vpin
+                                    if np.linalg.norm(ekf.v) > 22.0:
+                                        ekf.v *= 22.0 / np.linalg.norm(ekf.v)
+
+                        # Do not report centimetre certainty from a map whose
+                        # individual landmarks still have dm-m uncertainty.
+                        ekf.P[0:3, :] = 0.0
+                        ekf.P[:, 0:3] = 0.0
+                        ekf.P[0:3, 0:3] = np.eye(3) * 0.20**2
+                        ekf.P[3:6, 3:6] += np.eye(3) * 0.35**2
+                        direct_pin_rows.append(
+                            (t_imu - t_start, gp, jumpp, rmsp, depthp))
+                        last_upd = t_imu
+
             if args.dump_trace:
                 q_tr = ekf.q.as_quat()
                 trace.append((t_imu - t_start, str(path),
@@ -736,6 +907,10 @@ def main():
                               np.array([q_tr[3], q_tr[0], q_tr[1],
                                         q_tr[2]]), sig_p))
             if args.pins_only:
+                obs = []
+            if args.direct_position_pins:
+                # Translation and velocity came from the explicit pin above.
+                # Never let planar gate geometry modify gyro attitude.
                 obs = []
             n = ekf.update_corners(obs)
             if n:
@@ -808,7 +983,8 @@ def main():
                             igs.append([max(x0, 0), max(y0, 0),
                                         min(x1, W), min(y1, H)])
                     tl_rows.append((str(path), gates_lab[:3], igs))
-            if (not n) and (clean_dets or n_clean) and (t_imu - last_upd) > (
+            if (not args.direct_position_pins) and (not n) and \
+                    (clean_dets or n_clean) and (t_imu - last_upd) > (
                     0.3 if args.pins_only else 0.5):
                 # lost -> PnP-relocalize against the race-status active gate;
                 # branch/back-face disambiguated by attitude agreement (the
@@ -829,8 +1005,11 @@ def main():
                 ag = active_gate(t_imu)
                 Rb = ekf.q.as_matrix()
                 cands_r = []
-                for gi in [g for g in (ag, ag + 1, ag - 1)
-                           if 0 <= g < len(gates)]:
+                for gi in [
+                        g for g in (ag, ag + 1, ag - 1)
+                        if 0 <= g < len(gates)
+                        and (args.max_fuse_gate is None
+                             or g <= args.max_fuse_gate)]:
                     for (R_g2c, t_pnp, rms) in branches:
                         if rms > 3.0:
                             continue
@@ -1133,6 +1312,22 @@ def main():
     for (tr, gi, ang, rms, _pb, _pn) in relocs[:60]:
         print(f"  t {tr:5.1f}s -> gate {gi:2d}  att-agree {ang:4.1f}deg  "
               f"pnp {rms:.2f}px")
+    if args.direct_position_pins:
+        print(f"direct position pins: {len(direct_pin_rows)}")
+        if direct_pin_rows:
+            dp = np.asarray(direct_pin_rows, float)
+            print(f"  jump median/p90 {np.median(dp[:,2]):.2f}/"
+                  f"{np.percentile(dp[:,2],90):.2f}m, "
+                  f"PnP rms median {np.median(dp[:,3]):.2f}px")
+            counts = {
+                int(g): int((dp[:, 1] == g).sum())
+                for g in np.unique(dp[:, 1]).astype(int)}
+            print(f"  pins per gate: {counts}")
+        print(f"official pass pins: {len(pass_pin_rows)}")
+        if pass_pin_rows:
+            pp = np.asarray(pass_pin_rows, float)
+            print(f"  pre-pin error median/p90 {np.median(pp[:,2]):.2f}/"
+                  f"{np.percentile(pp[:,2],90):.2f}m")
 
     # pin-chain anchor-yaw fit: dead-reckoned displacement between
     # consecutive pins vs the map's gate-to-gate vector
