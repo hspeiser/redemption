@@ -503,7 +503,7 @@ def main():
     print(f"LEARNER THREAD on ({dev}, utd_cap {args.utd_cap})", flush=True)
 
     rng = np.random.default_rng(7)
-    ep = 0; total = 0; fin100 = []
+    ep = 0; total = 0; fin100 = []; best_eval = [-1]
     solved = set()
     t0 = time.time()
     while True:
@@ -549,14 +549,25 @@ def main():
             frames_best = []; g_best = -1
             for k in range(args.eval_batch):
                 cap = vis is not None and k == 0
-                _, _, ge, mde, re, _, fr, _ = fly_episode(mav, agent, gates, args,
-                                                          deterministic=True, ema=True,
-                                                          vis=vis, capture=cap, tcap=tc, rcaps=rc)
+                tr_e, _, ge, mde, re, _, fr, _ = fly_episode(mav, agent, gates, args,
+                                                             deterministic=True, ema=True,
+                                                             vis=vis, capture=cap, tcap=tc,
+                                                             rcaps=rc)
+                # eval flights are the BEST data we produce (greedy passes 40-70% when hot vs
+                # ~10% stochastic) — feed them back as off-policy experience instead of
+                # discarding them; passes strengthen the elite/SIL anchor directly.
+                cols_e = pack_cols(nstep_pack(tr_e, args.nstep, CFG.gamma))
+                add_pack(agent.buf, cols_e, args.mirror)
+                if ge >= 1:
+                    add_pack(agent.elite, cols_e, args.mirror)
                 for j in range(min(ge, args.gates)):
                     counts[j] += 1
                 mds.append(mde)
                 if ge > g_best and fr:
                     g_best = ge; frames_best = fr
+            if sum(counts) > best_eval[0]:
+                best_eval[0] = sum(counts)
+                agent.save(os.path.join(run_dir, "vq1_best.pt"))
             cstr = " ".join(f"g{k}:{c}/{args.eval_batch}" for k, c in enumerate(counts))
             rec2 = {"ep": ep, "t": time.time(), "eval_g0": counts[0],
                     "eval_gates": counts, "eval_mind": float(np.mean(mds))}
