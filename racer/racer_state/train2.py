@@ -405,6 +405,8 @@ def main():
     ap.add_argument("--nstep", type=int, default=5)
     ap.add_argument("--her", type=int, default=2)
     ap.add_argument("--silw", type=float, default=1.0)
+    ap.add_argument("--elite_frac", type=float, default=0.6, help="fraction of every SAC batch drawn from the elite (pass) buffer")
+    ap.add_argument("--sil_batch", type=int, default=512, help="elite minibatch per SIL term")
     ap.add_argument("--sil_every", type=int, default=1, help="GPU updates are cheap; SIL every update")
     ap.add_argument("--mirror", type=int, default=1)
     ap.add_argument("--batch", type=int, default=1024)
@@ -435,6 +437,8 @@ def main():
     CFG.target_entropy = args.ent
     CFG.batch_size = args.batch
     CFG.sil_weight = args.silw
+    CFG.elite_frac = args.elite_frac
+    CFG.sil_batch = args.sil_batch
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     run_dir = CFG.run_dir; os.makedirs(run_dir, exist_ok=True)
     mpath = os.path.join(run_dir, "metrics.jsonl")

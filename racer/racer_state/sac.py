@@ -143,7 +143,7 @@ class SAC:
             # weight exp(adv/beta) where adv = realized return-to-go minus the critic's estimate of
             # the current policy. Soft weighting consolidates faster than a binary mask while still
             # annealing away as the policy catches up (immune to the plain-BC collapse).
-            eo, ea, _, _, _, _, eret = self.elite.sample(256)
+            eo, ea, _, _, _, _, eret = self.elite.sample(getattr(cfg, "sil_batch", 256))
             with torch.no_grad():
                 pa_e, _ = self.actor.sample(eo)
                 v_e = self.critic(eo, pa_e).min(0).values
