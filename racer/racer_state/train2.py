@@ -137,7 +137,7 @@ MIR_A = np.array([-1, 1, -1, 1], np.float32)
 
 
 def _pad_obs_cols(w, at, extra):
-    z = torch.zeros(w.shape[0], extra, dtype=w.dtype)
+    z = torch.zeros(w.shape[0], extra, dtype=w.dtype, device=w.device)
     return torch.cat([w[:, :at], z, w[:, at:]], 1)
 
 
