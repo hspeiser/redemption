@@ -36,7 +36,26 @@ def main():
     ap.add_argument("--base", required=True)
     ap.add_argument("--gates", default="9-16")
     ap.add_argument("--out", required=True)
+    ap.add_argument("--max-rms", type=float, default=None,
+                    help="drop journal fits with solve rms above this (px)")
+    ap.add_argument("--known-anchors", default=None,
+                    help="JSON {gate: [x,y,z]}: anchor those sessions at "
+                         "known_pos + cam_tm (click-anchor, no beliefs)")
+    ap.add_argument("--no-belief-anchors", action="store_true",
+                    help="never anchor on trace beliefs (branch-lock guard)")
+    ap.add_argument("--trace-attitude", action="store_true",
+                    help="rotate IMU accel by the trace's vision-corrected "
+                         "attitude (kills gravity leak on long bridges); "
+                         "attitude is trustworthy even where position "
+                         "branch-locks")
     args = ap.parse_args()
+    known = {}
+    if args.known_anchors:
+        ktxt = args.known_anchors
+        if Path(ktxt).exists():
+            ktxt = Path(ktxt).read_text()
+        known = {int(k): np.asarray(v, float)
+                 for k, v in json.loads(ktxt).items()}
     ep = Path(args.episode_dir)
     g_lo, g_hi = [int(x) for x in args.gates.split("-")]
     ALLOW = set(range(g_lo, g_hi + 1))
@@ -71,6 +90,20 @@ def main():
             R = R @ Rotation.from_rotvec(imu[i, 4:7] * gs * dt).as_matrix()
         Rws[i] = R
         a_w[i] = R @ (imu[i, 1:4] * np.asarray(GateEKF.ACCEL_SIGN)) + G_NED
+    if args.trace_attitude:
+        from scipy.spatial.transform import Slerp
+        qs = st["quat"]  # wxyz
+        rot = Rotation.from_quat(
+            np.stack([qs[:, 1], qs[:, 2], qs[:, 3], qs[:, 0]], axis=1))
+        tt = np.asarray(st["t"], float) + t0
+        keep = np.concatenate([[True], np.diff(tt) > 1e-6])
+        sl = Slerp(tt[keep], rot[keep])
+        tc = np.clip(t_imu, tt[keep][0], tt[keep][-1])
+        Rws = sl(tc).as_matrix()
+        for i in range(n_i):
+            a_w[i] = Rws[i] @ (imu[i, 1:4] *
+                               np.asarray(GateEKF.ACCEL_SIGN)) + G_NED
+        print("using trace (vision-corrected) attitude for IMU rotation")
     dts = np.diff(t_imu, prepend=t_imu[0])
     dts[(dts <= 0) | (dts > 0.5)] = 0
     Vc = np.cumsum(a_w * dts[:, None], axis=0)
@@ -90,6 +123,10 @@ def main():
             continue
         r0 = json.loads(ln)
         if not r0.get("ok"):
+            continue
+        if args.max_rms is not None and r0.get("rms", 0) > args.max_rms:
+            print(f"  drop fit frame {r0['frame']} gate {r0['gate']} "
+                  f"rms {r0['rms']:.1f}px")
             continue
         fidx = min(r0["frame"], len(st["t"]) - 1)
         trel = float(st["t"][fidx])
@@ -144,10 +181,18 @@ def main():
     # backward walk; un-anchored gates between two seeds get the
     # hop-weighted average (linear bridge drift cancels)
     for s in sessions:
-        s["anchored"] = s["anchor"]["sig"] < 0.12
-        if s["anchored"]:
-            s["cam_w"] = s["anchor"]["p_abs"] + s["v_tm"] * (
-                s["tm"] - s["anchor"]["t"])
+        if s["gate"] in known:
+            # click-anchor: gate position is certified, the fit gives the
+            # camera relative to it exactly — no beliefs involved
+            s["anchored"] = True
+            s["cam_w"] = known[s["gate"]] + s["cam_tm"]
+        elif args.no_belief_anchors:
+            s["anchored"] = False
+        else:
+            s["anchored"] = s["anchor"]["sig"] < 0.12
+            if s["anchored"]:
+                s["cam_w"] = s["anchor"]["p_abs"] + s["v_tm"] * (
+                    s["tm"] - s["anchor"]["t"])
 
     def bridge(sa, sb):
         """camera world at sb.tm given sa anchored (works both ways)."""
@@ -189,6 +234,10 @@ def main():
         if not cands:
             print(f"  gate {s['gate']}: no anchor reachable, skipped")
             continue
+        if "cam_w_f" in s and "cam_w_b" in s and not s["anchored"]:
+            gap = np.linalg.norm(s["cam_w_f"] - s["cam_w_b"])
+            print(f"  gate {s['gate']:2d} fwd/bwd disagreement "
+                  f"{gap*100:.0f}cm (hops {s['hops_f']}/{s['hops_b']})")
         wsum = sum(w for _c, w in cands)
         cam_w = sum(c * w for c, w in cands) / wsum
         p = cam_w - s["cam_tm"]
