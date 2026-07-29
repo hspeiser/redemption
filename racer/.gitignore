@@ -1,0 +1,5 @@
+__pycache__/
+runs/
+runs_mj/
+*.pt
+*.mp4
