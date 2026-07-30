@@ -242,9 +242,10 @@ def decode_corners(hm_logits, off, thresh=0.25, topk=12):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, max_batches=120):
+def evaluate(model, loader, device, max_batches=120, corner_thresh=0.12):
     model.eval()
     px_errs = []
+    n_corner_gt = 0
     pos_errs, rot_errs, vel_errs, ng_errs, gate_hits, n_frames = [], [], [], [], 0, 0
     for bi, batch in enumerate(loader):
         if bi >= max_batches:
@@ -269,13 +270,17 @@ def evaluate(model, loader, device, max_batches=120):
         n_frames += B
         # corner localization on a subset of the batch
         for b in range(min(B, 4)):
-            dec = decode_corners(out["hm"][b].float(), out["off"][b].float())
+            dec = decode_corners(
+                out["hm"][b].float(), out["off"][b].float(),
+                thresh=corner_thresh, topk=24,
+            )
             gt_hm = batch["hm"][b]
             gt_om = batch["om"][b]
             gt_off = batch["off"][b]
             for c in range(8):
                 cells = gt_om[c].nonzero(as_tuple=False)
                 for (ci, cj) in cells.tolist():
+                    n_corner_gt += 1
                     gu = (cj + gt_off[2 * c, ci, cj].item()) * 4.0
                     gv = (ci + gt_off[2 * c + 1, ci, cj].item()) * 4.0
                     best = None
@@ -283,14 +288,29 @@ def evaluate(model, loader, device, max_batches=120):
                         d = math.hypot(u - gu, v - gv)
                         if best is None or d < best:
                             best = d
-                    if best is not None and best < 8.0:
+                    if best is not None:
                         px_errs.append(best)
     model.train()
     px = np.array(px_errs) if px_errs else np.array([99.0])
+    recall_2 = sum(error <= 2.0 for error in px_errs) / max(n_corner_gt, 1)
+    recall_4 = sum(error <= 4.0 for error in px_errs) / max(n_corner_gt, 1)
+    recall_8 = sum(error <= 8.0 for error in px_errs) / max(n_corner_gt, 1)
+    p90 = float(np.percentile(px, 90))
     return {
         "corner_px_median": float(np.median(px)),
-        "corner_px_p90": float(np.percentile(px, 90)),
+        "corner_px_p90": p90,
         "corner_matches": len(px_errs),
+        "corner_gt": n_corner_gt,
+        "corner_candidate_recall": len(px_errs) / max(n_corner_gt, 1),
+        "corner_recall_2px": recall_2,
+        "corner_recall_4px": recall_4,
+        "corner_recall_8px": recall_8,
+        # Checkpoint selection must reward finding every visible corner.
+        # The old evaluator discarded all misses and every error >=8 px,
+        # allowing a low-recall model to look artificially excellent.
+        "corner_selection_score": (
+            recall_4 + 0.25 * recall_8 - 0.001 * min(p90, 100.0)
+        ),
         "pos_err_m": float(np.median(pos_errs)),
         "rot_err_deg": float(np.median(rot_errs)),
         "vel_err_ms": float(np.median(vel_errs)),
@@ -308,6 +328,10 @@ def main():
     ap.add_argument("--resume", default=None, help="checkpoint to init from")
     ap.add_argument("--tag", default=None,
                     help="version tag: checkpoints/logs get _<tag> names")
+    ap.add_argument(
+        "--labels-dir", action="append", default=None,
+        help="label directory to include (repeatable; default: data/labels)",
+    )
     ap.add_argument("--path-map", action="append", default=None,
                     help="old_prefix::new_prefix remap for frame paths "
                          "(repeatable)")
@@ -315,10 +339,22 @@ def main():
 
     torch.backends.cudnn.benchmark = True
     device = "cuda"
-    labels_dir = REPO / "data" / "labels"
-    files = sorted(labels_dir.glob("*.npz"))
-    val_f = [f for f in files if f.stem in VAL_EPISODES]
-    train_f = [f for f in files if f.stem not in VAL_EPISODES]
+    label_dirs = (
+        [Path(path).expanduser().resolve() for path in args.labels_dir]
+        if args.labels_dir else [REPO / "data" / "labels"]
+    )
+    files = sorted({
+        path.resolve()
+        for label_dir in label_dirs
+        for path in label_dir.glob("*.npz")
+    })
+    # Temporal-label files use a ``tl_`` prefix. Match contained episode
+    # ids so an official holdout cannot silently leak into training.
+    val_f = [
+        f for f in files
+        if any(episode in f.stem for episode in VAL_EPISODES)
+    ]
+    train_f = [f for f in files if f not in val_f]
     if not val_f:
         val_f = files[::8]
         train_f = [f for f in files if f not in val_f]
@@ -351,7 +387,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     sfx = f"_{args.tag}" if args.tag else ""
     log_f = open(out_dir / f"train_log{sfx}.jsonl", "a")
-    best = 1e9
+    best = -float("inf")
 
     for ep in range(args.epochs):
         t0 = time.time()
@@ -407,11 +443,17 @@ def main():
         log_f.flush()
         torch.save({"model": model.state_dict(), "epoch": ep,
                     "metrics": metrics}, out_dir / f"gatenet{sfx}_last.pt")
-        if metrics["corner_px_median"] < best:
-            best = metrics["corner_px_median"]
+        if metrics["corner_selection_score"] > best:
+            best = metrics["corner_selection_score"]
             torch.save({"model": model.state_dict(), "epoch": ep,
                         "metrics": metrics}, out_dir / f"gatenet{sfx}_best.pt")
-            print(f"saved best (corner median {best:.3f}px)", flush=True)
+            print(
+                "saved best "
+                f"(score {best:.4f}, "
+                f"recall@4 {metrics['corner_recall_4px']:.3f}, "
+                f"recall@8 {metrics['corner_recall_8px']:.3f})",
+                flush=True,
+            )
 
     print("TRAINING DONE", flush=True)
 

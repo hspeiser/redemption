@@ -19,8 +19,10 @@ from scipy.spatial.transform import Rotation
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+from aigp.calib.detect import detect_gates  # noqa: E402
 from aigp.vision.labels import load_calib  # noqa: E402
-from scripts.vq2_align import load_imu, load_race_status  # noqa: E402
+from scripts.vq2_align import (load_imu, load_race_status,  # noqa: E402
+                               pnp_gate_all)
 
 HOLE = 0.75
 SQ_HOLE = np.array([[-HOLE, 0, -HOLE], [HOLE, 0, -HOLE],
@@ -68,6 +70,9 @@ def main():
     ap.add_argument("--journal", action="append", default=[],
                     help="optional map-editor click journal from this exact "
                          "trace; sparse PnP positions become visual anchors")
+    ap.add_argument("--auto-gates", default=None,
+                    help="optional inclusive gate range (for example 0-8): "
+                         "harvest conservative clean-PnP approach anchors")
     args = ap.parse_args()
 
     src = np.load(args.trace, allow_pickle=False)
@@ -99,7 +104,7 @@ def main():
 
     visual_rows = []
     visual_correction = np.zeros_like(pos)
-    if args.journal:
+    if args.journal or args.auto_gates:
         calib = load_calib(REPO / "data/calib/calib.json")
         fx, fy, cx, cy = calib["K"]
         K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
@@ -150,6 +155,63 @@ def main():
                     visual_rows.append(
                         (frame, gate, best[0], delta.copy()))
 
+        if args.auto_gates:
+            auto_lo, auto_hi = [
+                int(value) for value in args.auto_gates.split("-")]
+            pass_by_gate = {gate: pass_t for pass_t, gate in events}
+            for gate in range(auto_lo, auto_hi + 1):
+                if gate not in pass_by_gate:
+                    continue
+                pass_t = pass_by_gate[gate]
+                prev_t = pass_by_gate.get(gate - 1, float(t[0]))
+                lo_t = max(prev_t + 0.25, pass_t - 1.40)
+                hi_t = pass_t - 0.25
+                indices = np.where((t >= lo_t) & (t <= hi_t))[0][::3]
+                for frame in indices:
+                    img = cv2.imread(str(src["path"][frame]))
+                    if img is None:
+                        continue
+                    candidates = []
+                    for det in detect_gates(img, min_area=250):
+                        if det["inner"] is None:
+                            continue
+                        area_out = cv2.contourArea(
+                            det["outer"].astype(np.float32))
+                        area_in = cv2.contourArea(
+                            det["inner"].astype(np.float32))
+                        if area_in <= 0 or not (
+                                2.0 < area_out / area_in < 5.5):
+                            continue
+                        span = np.sqrt(area_out)
+                        if np.linalg.norm(
+                                det["outer"].mean(0) -
+                                det["inner"].mean(0)) > 0.25 * span:
+                            continue
+                        branches = pnp_gate_all(det, K)
+                        for _r_gate_camera, t_camera_gate, rms in branches:
+                            if rms > 3.0:
+                                continue
+                            qw, qx, qy, qz = src["quat"][frame]
+                            R_wb = Rotation.from_quat(
+                                [qx, qy, qz, qw]).as_matrix()
+                            R_wc = R_wb @ R_cb.T
+                            p_visual = np.asarray(
+                                gates[gate]["pos"], float) - \
+                                R_wc @ t_camera_gate
+                            delta = p_visual - pos[frame]
+                            candidates.append(
+                                (float(np.linalg.norm(delta)), rms,
+                                 delta.copy()))
+                    # Gate identity is supplied by the official race segment.
+                    # A previous/future visible gate produces a map-edge-sized
+                    # position jump and is rejected by this continuity gate.
+                    if candidates:
+                        jump, rms, delta = min(candidates,
+                                               key=lambda row: row[0])
+                        if jump <= 3.0:
+                            visual_rows.append(
+                                (int(frame), gate, float(rms), delta))
+
         if visual_rows:
             visual_rows.sort(key=lambda row: row[0])
             # Collapse duplicate-frame anchors robustly.
@@ -186,7 +248,7 @@ def main():
         err = np.asarray([row[2] for row in rows])
         print(f"endpoint correction median/p90/max: {np.median(err):.2f}/"
               f"{np.percentile(err, 90):.2f}/{err.max():.2f}m")
-    if args.journal:
+    if args.journal or args.auto_gates:
         print(f"visual anchors accepted: {len(visual_rows)}")
         if visual_rows:
             by_gate = {
