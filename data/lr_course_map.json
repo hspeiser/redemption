@@ -1,0 +1,1560 @@
+{
+  "schema_version": 1,
+  "map_id": "aigp_3385_arsenal1_cooked_v1",
+  "sim_build": "AIGP_3385",
+  "track_id": "arsenal/1",
+  "display_name": "AI GP VQF #2",
+  "status": "authoritative_cooked_geometry",
+  "authority": {
+    "description": "cooked TrackList identity, BP_Track ordered gate references, placed gate pass triggers, starting-grid PlayerStart0, and placed Arsenal environment actor roots",
+    "source_files": [
+      {
+        "path": "outputs/aigp_3385_cooked_assets/FlightSim/Content/levels/MAP_arsenal_track01.umap",
+        "sha256": "bfaa453b4d440852f7ba618ff62364011bfe864e79c8cb0043d2fa2c5eda7da9"
+      },
+      {
+        "path": "outputs/aigp_3385_cooked_assets/FlightSim/Content/Blueprints/RaceTools/BP_StartingGrid.uasset",
+        "sha256": "83b0bfe5b4f93bb92ef0fe249bc731203784f129d74e1f4d9b22afae973627e7"
+      },
+      {
+        "path": "outputs/aigp_3385_cooked_assets/FlightSim/Content/Anduril/Levels/Anduril_AI_GP_Arsenal1.umap",
+        "sha256": "78ac3d86f0c31b36987db251888f0cf0eebc752aff2dbde6f174343c45c86611"
+      },
+      {
+        "path": "outputs/aigp_3385_cooked_assets/FlightSim/Content/StaticData/TrackList.uasset",
+        "sha256": "79ed318373c4b9491aa1004506267d2d4c73cb26598d177293e51aae7d0f5693"
+      }
+    ]
+  },
+  "coordinate_frame": {
+    "name": "arsenal1_playerstart0_ned",
+    "origin": "BP_StartingGrid PlayerStart0",
+    "axes": "North=starting-grid forward, East=right, Down=gravity",
+    "scale_m_per_unreal_cm": 0.01
+  },
+  "spawn": {
+    "starting_grid_actor": "BP_StartingGrid_C_2",
+    "starting_grid_root_unreal_cm": [
+      950.07764,
+      10897.86914,
+      109.0
+    ],
+    "starting_grid_rotation_unreal_pitch_yaw_roll_deg": [
+      0.0,
+      -89.99963,
+      0.0
+    ],
+    "player_start_component": "PlayerStart0",
+    "player_start_local_cm": [
+      0.62605,
+      49.99995,
+      47.80408
+    ],
+    "position_unreal_cm": [
+      1000.07759,
+      10897.24342,
+      156.80408
+    ],
+    "position_course_ned_m": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "course_axes_in_unreal_xyz": {
+    "north_forward": [
+      6.52e-06,
+      -1.0,
+      0.0
+    ],
+    "east_right": [
+      1.0,
+      6.52e-06,
+      0.0
+    ],
+    "down": [
+      0.0,
+      0.0,
+      -1.0
+    ]
+  },
+  "gates": [
+    {
+      "index": 0,
+      "role": "lap",
+      "actor": "BP_gate_C_34",
+      "actor_root_unreal_cm": [
+        1006.25537,
+        9799.4707,
+        110.0
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        0.00035,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.0,
+        -1e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        1007.25537,
+        9799.4707,
+        210.0
+      ],
+      "position_course_ned_m": [
+        10.97773,
+        0.07171,
+        -0.53196
+      ],
+      "race_forward_course_ned_unit": [
+        1.0,
+        -4e-07,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 1,
+      "role": "lap",
+      "actor": "BP_gate_C_35",
+      "actor_root_unreal_cm": [
+        1891.50488,
+        8230.69824,
+        356.30676
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        30.00042,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        0.99995,
+        2e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        1892.37085,
+        8231.19824,
+        456.30676
+      ],
+      "position_course_ned_m": [
+        26.66051,
+        8.92276,
+        -2.99503
+      ],
+      "race_forward_course_ned_unit": [
+        0.866025,
+        0.5000006,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 2,
+      "role": "lap",
+      "actor": "BP_gate_C_50",
+      "actor_root_unreal_cm": [
+        2161.50488,
+        7410.69824,
+        286.30676
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        10.00045,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.00009,
+        0.00016,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        2162.48975,
+        7410.87207,
+        386.30676
+      ],
+      "position_course_ned_m": [
+        34.86379,
+        11.62389,
+        -2.29503
+      ],
+      "race_forward_course_ned_unit": [
+        0.9848075,
+        0.1736494,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 3,
+      "role": "lap",
+      "actor": "BP_gate_C_36",
+      "actor_root_unreal_cm": [
+        1346.38098,
+        6507.57178,
+        170.00011
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        -49.99974,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.00007,
+        -2e-05,
+        100.00002
+      ],
+      "centre_unreal_cm": [
+        1347.0238,
+        6506.80566,
+        270.00012
+      ],
+      "position_course_ned_m": [
+        43.9044,
+        3.46918,
+        -1.13196
+      ],
+      "race_forward_course_ned_unit": [
+        0.642786,
+        -0.7660458,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 4,
+      "role": "lap",
+      "actor": "BP_gate_C_37",
+      "actor_root_unreal_cm": [
+        -330.0,
+        5040.0,
+        100.00011
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        -49.99974,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.00006,
+        -5e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        -329.35721,
+        5039.23389,
+        200.00011
+      ],
+      "position_course_ned_m": [
+        58.58001,
+        -13.29473,
+        -0.43196
+      ],
+      "race_forward_course_ned_unit": [
+        0.642786,
+        -0.7660458,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 5,
+      "role": "lap",
+      "actor": "BP_gate_C_38",
+      "actor_root_unreal_cm": [
+        -1180.0,
+        3060.0,
+        100.00011
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        0.0004,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.0,
+        -1e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        -1179.0,
+        3060.0,
+        200.00011
+      ],
+      "position_course_ned_m": [
+        78.37229,
+        -21.79129,
+        -0.43196
+      ],
+      "race_forward_course_ned_unit": [
+        1.0,
+        5e-07,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 6,
+      "role": "lap",
+      "actor": "BP_gate_C_39",
+      "actor_root_unreal_cm": [
+        -1180.0,
+        1570.0,
+        610.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        0.0004,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.0,
+        -1e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        -1179.0,
+        1570.0,
+        710.00012
+      ],
+      "position_course_ned_m": [
+        93.27229,
+        -21.79138,
+        -5.53196
+      ],
+      "race_forward_course_ned_unit": [
+        1.0,
+        5e-07,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 7,
+      "role": "lap",
+      "actor": "BP_gate_C_40",
+      "actor_root_unreal_cm": [
+        -180.0,
+        530.0,
+        650.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        5e-05,
+        90.00053,
+        5e-05
+      ],
+      "pass_trigger_local_cm": [
+        0.99997,
+        -0.0,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        -179.99992,
+        531.00007,
+        750.00012
+      ],
+      "position_course_ned_m": [
+        103.66236,
+        -11.80145,
+        -5.93196
+      ],
+      "race_forward_course_ned_unit": [
+        -2.7e-06,
+        1.0,
+        8e-07
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 8,
+      "role": "lap",
+      "actor": "BP_gate_C_41",
+      "actor_root_unreal_cm": [
+        940.0,
+        180.0,
+        570.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.00014,
+        70.00047,
+        0.00015
+      ],
+      "pass_trigger_local_cm": [
+        1.0,
+        0.0,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        940.34234,
+        180.93982,
+        670.00012
+      ],
+      "position_course_ned_m": [
+        107.16303,
+        -0.59805,
+        -5.13196
+      ],
+      "race_forward_course_ned_unit": [
+        0.3420186,
+        0.9396932,
+        2.7e-06
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 9,
+      "role": "lap",
+      "actor": "BP_gate_C_42",
+      "actor_root_unreal_cm": [
+        2000.0,
+        -540.0,
+        520.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.00032,
+        40.0003,
+        -19.99984
+      ],
+      "pass_trigger_local_cm": [
+        1.0,
+        1e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        1978.78184,
+        -513.15691,
+        613.96947
+      ],
+      "position_course_ned_m": [
+        114.10407,
+        9.7863,
+        -4.57165
+      ],
+      "race_forward_course_ned_unit": [
+        0.7198466,
+        0.6040239,
+        -0.3420175
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 10,
+      "role": "lap",
+      "actor": "BP_gate_C_43",
+      "actor_root_unreal_cm": [
+        1910.0,
+        -1528.0,
+        460.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        -19.99999,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.00001,
+        -2e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        1910.9397,
+        -1528.34204,
+        560.00012
+      ],
+      "position_course_ned_m": [
+        124.25591,
+        9.10781,
+        -4.03196
+      ],
+      "race_forward_course_ned_unit": [
+        0.9396904,
+        -0.3420261,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 11,
+      "role": "lap",
+      "actor": "BP_gate_C_44",
+      "actor_root_unreal_cm": [
+        1380.0,
+        -3040.0,
+        110.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        -19.99999,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.00001,
+        -2e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        1380.9397,
+        -3040.34204,
+        210.00012
+      ],
+      "position_course_ned_m": [
+        139.37588,
+        3.80771,
+        -0.53196
+      ],
+      "race_forward_course_ned_unit": [
+        0.9396904,
+        -0.3420261,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 12,
+      "role": "lap",
+      "actor": "BP_gate_C_46",
+      "actor_root_unreal_cm": [
+        70.0,
+        -4360.0,
+        320.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        -60.00005,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.00016,
+        -9e-05,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        70.5,
+        -4360.86621,
+        420.00012
+      ],
+      "position_course_ned_m": [
+        152.58104,
+        -9.29677,
+        -2.63196
+      ],
+      "race_forward_course_ned_unit": [
+        0.4999937,
+        -0.8660291,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 13,
+      "role": "lap",
+      "actor": "BP_gate_C_47",
+      "actor_root_unreal_cm": [
+        -910.0,
+        -5240.0,
+        370.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        1.0,
+        0.0,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        -909.0,
+        -5240.0,
+        470.00012
+      ],
+      "position_course_ned_m": [
+        161.37231,
+        -19.09183,
+        -3.13196
+      ],
+      "race_forward_course_ned_unit": [
+        1.0,
+        -6.5e-06,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 14,
+      "role": "lap",
+      "actor": "BP_gate_C_49",
+      "actor_root_unreal_cm": [
+        -330.0,
+        -6250.0,
+        370.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        39.99997,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        0.99987,
+        -0.00016,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        -329.23395,
+        -6249.35742,
+        470.00012
+      ],
+      "position_course_ned_m": [
+        171.46592,
+        -13.29423,
+        -3.13196
+      ],
+      "race_forward_course_ned_unit": [
+        0.766049,
+        0.6427822,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 15,
+      "role": "lap",
+      "actor": "BP_gate_C_48",
+      "actor_root_unreal_cm": [
+        638.55579,
+        -7262.77441,
+        163.7738
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        19.99993,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        0.99993,
+        -0.00021,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        639.49548,
+        -7262.43262,
+        263.7738
+      ],
+      "position_course_ned_m": [
+        181.59674,
+        -3.60701,
+        -1.0697
+      ],
+      "race_forward_course_ned_unit": [
+        0.9396953,
+        0.3420128,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    },
+    {
+      "index": 16,
+      "role": "finish",
+      "actor": "BP_gate_C_45",
+      "actor_root_unreal_cm": [
+        780.0,
+        -9320.0,
+        110.00012
+      ],
+      "rotation_unreal_pitch_yaw_roll_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "pass_trigger_local_cm": [
+        0.0,
+        0.0,
+        100.0
+      ],
+      "centre_unreal_cm": [
+        780.0,
+        -9320.0,
+        210.00012
+      ],
+      "position_course_ned_m": [
+        202.17242,
+        -2.20209,
+        -0.53196
+      ],
+      "race_forward_course_ned_unit": [
+        1.0,
+        -6.5e-06,
+        0.0
+      ],
+      "aperture_m": {
+        "inner_width": 1.5,
+        "inner_height": 1.5,
+        "outer_width": 2.72,
+        "depth": 0.26
+      }
+    }
+  ],
+  "landmark_actor_roots": {
+    "station_bay_actor_roots": [
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay12",
+        "actor_root_unreal_cm": [
+          2400.0,
+          -180.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          110.77253,
+          13.9985,
+          1.56804
+        ],
+        "station_number": 12
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay13_3",
+        "actor_root_unreal_cm": [
+          2400.0,
+          1955.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          89.42253,
+          13.99864,
+          1.56804
+        ],
+        "station_number": 13
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay14_12",
+        "actor_root_unreal_cm": [
+          2400.0,
+          4090.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          68.07253,
+          13.99878,
+          1.56804
+        ],
+        "station_number": 14
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay15",
+        "actor_root_unreal_cm": [
+          0.0,
+          -180.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          110.77237,
+          -10.0015,
+          1.56804
+        ],
+        "station_number": 15
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay16_4",
+        "actor_root_unreal_cm": [
+          0.0,
+          1955.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          89.42237,
+          -10.00136,
+          1.56804
+        ],
+        "station_number": 16
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay17_13",
+        "actor_root_unreal_cm": [
+          0.0,
+          4090.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          68.07237,
+          -10.00122,
+          1.56804
+        ],
+        "station_number": 17
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay18",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          -170.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          110.67221,
+          -34.1015,
+          1.56804
+        ],
+        "station_number": 18
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay19_5",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          1955.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          89.42221,
+          -34.10136,
+          1.56804
+        ],
+        "station_number": 19
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay20_14",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          4100.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          67.97221,
+          -34.10122,
+          1.56804
+        ],
+        "station_number": 20
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay21_15",
+        "actor_root_unreal_cm": [
+          2400.0,
+          6225.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          46.72253,
+          13.99892,
+          1.56804
+        ],
+        "station_number": 21
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay22_16",
+        "actor_root_unreal_cm": [
+          0.0,
+          6225.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          46.72237,
+          -10.00108,
+          1.56804
+        ],
+        "station_number": 22
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay23_17",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          6225.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          46.72221,
+          -34.10108,
+          1.56804
+        ],
+        "station_number": 23
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay24_24",
+        "actor_root_unreal_cm": [
+          2400.0,
+          8360.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          25.37253,
+          13.99906,
+          1.56804
+        ],
+        "station_number": 24
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay25_25",
+        "actor_root_unreal_cm": [
+          0.0,
+          8360.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          25.37237,
+          -10.00094,
+          1.56804
+        ],
+        "station_number": 25
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay26_26",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          8370.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          25.27221,
+          -34.10094,
+          1.56804
+        ],
+        "station_number": 26
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay27_27",
+        "actor_root_unreal_cm": [
+          2400.0,
+          10495.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          4.02253,
+          13.9992,
+          1.56804
+        ],
+        "station_number": 27
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay28_28",
+        "actor_root_unreal_cm": [
+          0.0,
+          10495.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          4.02237,
+          -10.0008,
+          1.56804
+        ],
+        "station_number": 28
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay29_29",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          10495.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          4.02221,
+          -34.1008,
+          1.56804
+        ],
+        "station_number": 29
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay30_36",
+        "actor_root_unreal_cm": [
+          2400.0,
+          -4450.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          153.47253,
+          13.99822,
+          1.56804
+        ],
+        "station_number": 30
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay31_37",
+        "actor_root_unreal_cm": [
+          0.0,
+          -4450.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          153.47237,
+          -10.00178,
+          1.56804
+        ],
+        "station_number": 31
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay32_38",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          -4440.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          153.37221,
+          -34.10178,
+          1.56804
+        ],
+        "station_number": 32
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay33_39",
+        "actor_root_unreal_cm": [
+          2400.0,
+          -2315.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          132.12253,
+          13.99836,
+          1.56804
+        ],
+        "station_number": 33
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay34",
+        "actor_root_unreal_cm": [
+          0.0,
+          -2315.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          132.12237,
+          -10.00164,
+          1.56804
+        ],
+        "station_number": 34
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay35",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          -2315.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          132.12221,
+          -34.10164,
+          1.56804
+        ],
+        "station_number": 35
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay36",
+        "actor_root_unreal_cm": [
+          2400.0,
+          -8720.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          196.17253,
+          13.99795,
+          1.56804
+        ],
+        "station_number": 36
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay37",
+        "actor_root_unreal_cm": [
+          0.0,
+          -8720.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          196.17237,
+          -10.00205,
+          1.56804
+        ],
+        "station_number": 37
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay38",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          -8710.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          196.07221,
+          -34.10205,
+          1.56804
+        ],
+        "station_number": 38
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay39",
+        "actor_root_unreal_cm": [
+          2400.0,
+          -6585.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          174.82253,
+          13.99808,
+          1.56804
+        ],
+        "station_number": 39
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay40",
+        "actor_root_unreal_cm": [
+          0.0,
+          -6585.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          174.82237,
+          -10.00192,
+          1.56804
+        ],
+        "station_number": 40
+      },
+      {
+        "actor": "BP_Anduril_AI_GP_Arsenal1_Bay41",
+        "actor_root_unreal_cm": [
+          -2410.0,
+          -6585.0,
+          0.0
+        ],
+        "position_course_ned_m": [
+          174.82221,
+          -34.10192,
+          1.56804
+        ],
+        "station_number": 41
+      }
+    ],
+    "airplane_actor_roots": [
+      {
+        "actor": "BP_Anduril_Fury_LP10",
+        "actor_root_unreal_cm": [
+          2405.77954,
+          6202.13281,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          46.9512,
+          14.05671,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP11",
+        "actor_root_unreal_cm": [
+          2402.85889,
+          4091.50488,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          68.05748,
+          14.02737,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP13",
+        "actor_root_unreal_cm": [
+          -4.72717,
+          6202.14746,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          46.95089,
+          -10.04835,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP14",
+        "actor_root_unreal_cm": [
+          -4.72693,
+          4094.33447,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          68.02902,
+          -10.04849,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP15",
+        "actor_root_unreal_cm": [
+          -4.72766,
+          1927.73938,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          89.69497,
+          -10.04864,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP16",
+        "actor_root_unreal_cm": [
+          -2405.32812,
+          -195.38028,
+          70.0
+        ],
+        "position_course_ned_m": [
+          110.92601,
+          -34.05478,
+          0.86804
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP17",
+        "actor_root_unreal_cm": [
+          -2411.54419,
+          4104.48145,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          67.9274,
+          -34.11666,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP18",
+        "actor_root_unreal_cm": [
+          -2411.46118,
+          1960.91406,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          89.36307,
+          -34.11597,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP19",
+        "actor_root_unreal_cm": [
+          -2409.02515,
+          -6606.21289,
+          70.0
+        ],
+        "position_course_ned_m": [
+          175.03434,
+          -34.09217,
+          0.86804
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP2",
+        "actor_root_unreal_cm": [
+          2405.83936,
+          -181.50471,
+          71.42609
+        ],
+        "position_course_ned_m": [
+          110.78757,
+          14.0569,
+          0.85378
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP20",
+        "actor_root_unreal_cm": [
+          -2406.52441,
+          -2331.81152,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          132.29033,
+          -34.06688,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP21",
+        "actor_root_unreal_cm": [
+          -2408.84766,
+          -4458.67139,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          153.55893,
+          -34.09025,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP22",
+        "actor_root_unreal_cm": [
+          5.20376,
+          -4472.99219,
+          70.0
+        ],
+        "position_course_ned_m": [
+          153.70229,
+          -9.94974,
+          0.86804
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP23",
+        "actor_root_unreal_cm": [
+          -1.83841,
+          -8696.79199,
+          70.0
+        ],
+        "position_course_ned_m": [
+          195.94029,
+          -10.02044,
+          0.86804
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP24",
+        "actor_root_unreal_cm": [
+          2402.16577,
+          10539.8584,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          3.57394,
+          14.02086,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP3",
+        "actor_root_unreal_cm": [
+          0.75023,
+          -2326.75342,
+          70.0
+        ],
+        "position_course_ned_m": [
+          132.2399,
+          -9.99414,
+          0.86804
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP4",
+        "actor_root_unreal_cm": [
+          -0.2494,
+          -185.54607,
+          71.16213
+        ],
+        "position_course_ned_m": [
+          110.82783,
+          -10.00399,
+          0.85642
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP5_5",
+        "actor_root_unreal_cm": [
+          -2410.36646,
+          10490.40332,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          4.06818,
+          -34.10447,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP6",
+        "actor_root_unreal_cm": [
+          -2407.62622,
+          8360.34668,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          25.36875,
+          -34.0772,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP7",
+        "actor_root_unreal_cm": [
+          -2.61855,
+          10539.8584,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          3.57378,
+          -10.02698,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP9",
+        "actor_root_unreal_cm": [
+          2405.14844,
+          8354.79492,
+          72.34811
+        ],
+        "position_course_ned_m": [
+          25.42458,
+          14.05054,
+          0.84456
+        ]
+      },
+      {
+        "actor": "BP_Anduril_Fury_LP_2",
+        "actor_root_unreal_cm": [
+          2400.6897,
+          -2326.75342,
+          70.50954
+        ],
+        "position_course_ned_m": [
+          132.24006,
+          14.00526,
+          0.86295
+        ]
+      }
+    ]
+  },
+  "old_fusion_map_comparison": {
+    "status": "old_fusion_positions_rejected_for_global_map_control",
+    "reason": "the hand-fit map diverges materially after Gate 0",
+    "rows": [
+      {
+        "gate_index": 0,
+        "old_spawn_relative_ned_m": [
+          10.866,
+          -0.147,
+          -0.608
+        ],
+        "cooked_spawn_relative_ned_m": [
+          10.97773,
+          0.07171,
+          -0.53196
+        ],
+        "old_minus_cooked_ned_m": [
+          -0.11173,
+          -0.21871,
+          -0.07604
+        ],
+        "position_error_norm_m": 0.2571
+      },
+      {
+        "gate_index": 1,
+        "old_spawn_relative_ned_m": [
+          21.26,
+          6.36,
+          -1.14
+        ],
+        "cooked_spawn_relative_ned_m": [
+          26.66051,
+          8.92276,
+          -2.99503
+        ],
+        "old_minus_cooked_ned_m": [
+          -5.40051,
+          -2.56276,
+          1.85503
+        ],
+        "position_error_norm_m": 6.25894
+      },
+      {
+        "gate_index": 2,
+        "old_spawn_relative_ned_m": [
+          26.81,
+          7.61,
+          0.06
+        ],
+        "cooked_spawn_relative_ned_m": [
+          34.86379,
+          11.62389,
+          -2.29503
+        ],
+        "old_minus_cooked_ned_m": [
+          -8.05379,
+          -4.01389,
+          2.35503
+        ],
+        "position_error_norm_m": 9.30167
+      }
+    ]
+  },
+  "limitations": [
+    "gate centres and race order are exact cooked values",
+    "station and airplane entries are actor roots; visible feature offsets and mesh collision bounds are separate geometry",
+    "the map does not by itself provide live vehicle pose"
+  ]
+}

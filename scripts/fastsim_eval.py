@@ -48,6 +48,7 @@ def main() -> int:
                              "(measured reloc statistics)")
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
+    parser.add_argument("--obstacles", default="")
     parser.add_argument("--no-dr", action="store_true")
     parser.add_argument("--max-steps", type=int, default=1600)
     args = parser.parse_args()
@@ -72,7 +73,8 @@ def main() -> int:
     model = SurrogateModel.load(args.model)
     demo = dict(np.load(args.demo_npz)) if args.demo_npz else None
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
-                     device=str(device))
+                     device=str(device),
+                     obstacles_path=args.obstacles or None)
 
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
     actor = GaussianActor(OBS_DIM, ACT_DIM).to(device)

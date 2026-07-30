@@ -160,6 +160,7 @@ def main() -> int:
     parser.add_argument("--reloc-events", action="store_true")
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
+    parser.add_argument("--obstacles", default="")
     parser.add_argument("--resume", default="")
     args = parser.parse_args()
     run_dir = Path(args.run_dir)
@@ -183,7 +184,8 @@ def main() -> int:
                         demo_corridor_m=args.demo_corridor,
                         speed_cap_mps=args.speed_cap)
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
-                     device=str(device))
+                     device=str(device),
+                     obstacles_path=args.obstacles or None)
 
     actor = GaussianActor(OBS_DIM, ACT_DIM).to(device)
     critic = mlp(OBS_DIM, (512, 512, 256), 1).to(device)

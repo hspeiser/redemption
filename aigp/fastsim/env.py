@@ -83,7 +83,7 @@ class FastEnvConfig:
     no_progress_s: float = 1.5
     # domain randomization ranges (multipliers)
     dr_thrust: tuple = (0.85, 1.15)
-    dr_rate_gain: tuple = (0.85, 1.15)
+    dr_rate_gain: tuple = (0.70, 1.15)
     dr_rate_tau: tuple = (0.7, 1.4)
     dr_drag: tuple = (0.1, 0.6)
     act_delay_steps_max: int = 2
@@ -103,6 +103,7 @@ class FastVQ2Env:
         demo_states: dict | None = None,
         config: FastEnvConfig | None = None,
         device: str = "cuda",
+        obstacles_path: str | Path | None = None,
     ) -> None:
         self.cfg = config or FastEnvConfig()
         self.device = torch.device(device)
@@ -184,6 +185,22 @@ class FastVQ2Env:
         self.spawn_flag = torch.zeros(
             cfg.n_envs, dtype=torch.bool, device=self.device
         )
+        # authoritative obstacle cylinders (cooked actor roots): kill on
+        # XY proximity while within the obstacle's vertical span
+        self.obstacles = None
+        if obstacles_path is not None and Path(obstacles_path).exists():
+            ob = json.loads(Path(obstacles_path).read_text())
+            rows = []
+            for group in ("airplanes", "stations"):
+                for o in ob.get(group, []):
+                    rows.append([*o["pos"], o["radius"], o["height"]])
+            if rows:
+                arr = np.asarray(rows, np.float32)
+                self.obs_xy = t(arr[:, :2], device=self.device)
+                self.obs_z_root = t(arr[:, 2], device=self.device)
+                self.obs_r = t(arr[:, 3], device=self.device)
+                self.obs_h = t(arr[:, 4], device=self.device)
+                self.obstacles = True
         # demo-path corridor segments (subsampled for speed)
         self.demo_path = None
         if self.demo is not None and len(self.demo["pos"]) > 10:
@@ -595,6 +612,14 @@ class FastVQ2Env:
             (self.t_ep - self.t_best) > cfg.no_progress_s
         )
         timeout_ep = self.t_ep > cfg.max_episode_s
+        if self.obstacles is not None:
+            dxy = torch.linalg.norm(
+                self.p[:, None, :2] - self.obs_xy[None], dim=-1
+            )
+            in_z = (self.p[:, None, 2] > (self.obs_z_root - self.obs_h)[None]) \
+                & (self.p[:, None, 2] < (self.obs_z_root + 0.5)[None])
+            ob_hit = ((dxy < self.obs_r[None]) & in_z).any(dim=1)
+            hit = hit | ob_hit
         reward = reward - hit.float() * cfg.collision_penalty
         # every non-finish terminal costs the same order as crashing --
         # otherwise sitting on the pad (time penalty only) is the
