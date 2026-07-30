@@ -201,9 +201,17 @@ class FastVQ2Env:
                 self.obs_r = t(arr[:, 3], device=self.device)
                 self.obs_h = t(arr[:, 4], device=self.device)
                 self.obstacles = True
-        # demo-path corridor segments (subsampled for speed)
+        # demo-path corridor segments: precomputed (multi-path npz with
+        # explicit segment arrays) or derived from the pos stream
         self.demo_path = None
-        if self.demo is not None and len(self.demo["pos"]) > 10:
+        if self.demo is not None and "path_a" in self.demo:
+            self.demo_path_a = self.demo["path_a"]
+            self.demo_path_d = self.demo["path_d"]
+            self.demo_path_len2 = (
+                self.demo_path_d * self.demo_path_d
+            ).sum(-1).clamp(min=1e-9)
+            self.demo_path = True
+        elif self.demo is not None and len(self.demo["pos"]) > 10:
             dp = self.demo["pos"][::3]           # ~10 Hz spacing
             self.demo_path_a = dp[:-1]
             self.demo_path_d = dp[1:] - dp[:-1]
@@ -492,18 +500,23 @@ class FastVQ2Env:
             * torch.randn(n, 3, device=dev)
         )
         if cfg.reloc_events:
-            # close-range gate fusion prevents belief coasting: no drift
-            # events start near the target gate (matches the real filter)
-            gi_n = torch.clamp(self.target, max=N_GATES - 1)
-            near_gate = torch.linalg.norm(
-                self.gate_pos[gi_n] - self.p, dim=-1
-            ) < 9.0
-            # start a drift event
-            start = (self.t_ep >= self.reloc_next_t) & ~near_gate
-            self.reloc_next_t = torch.where(
-                (self.t_ep >= self.reloc_next_t) & near_gate,
-                self.t_ep + 1.0, self.reloc_next_t,
+            # MEASURED live behavior (flight round 4 forensics): the
+            # filter coasts ~0.5-1.5s on IMU during FAST gate approaches
+            # (2 Hz vision cannot refix in time), drifting ~0.05 m per
+            # m/s of speed per second. Model: continuous coast drift
+            # proportional to speed, PLUS the discrete reloc events.
+            spd_now = torch.linalg.norm(self.v, dim=-1)
+            self.noise_pos = self.noise_pos + (
+                0.004 * spd_now[:, None] * step_dt
+                * torch.randn(n, 3, device=dev)
+                + 0.010 * spd_now[:, None] * step_dt
+                * torch.nn.functional.normalize(
+                    self.noise_pos + 1e-6 * torch.randn(
+                        n, 3, device=dev
+                    ), dim=-1,
+                )
             )
+            start = self.t_ep >= self.reloc_next_t
             if start.any():
                 k = int(start.sum())
                 dur = (cfg.reloc_drift_s[0]
