@@ -97,10 +97,12 @@ def main() -> int:
             fail_gate = torch.where(
                 newly_fail, info["target"], fail_gate
             )
-            fail_kind = torch.where(
-                newly_fail & info["hit"], torch.ones_like(fail_kind),
-                fail_kind,
-            )
+            for code, key in ((1, "hit"), (2, "off"), (3, "overspeed"),
+                              (4, "timeout")):
+                fail_kind = torch.where(
+                    newly_fail & info[key],
+                    torch.full_like(fail_kind, code), fail_kind,
+                )
             failed |= newly_fail
             if bool((finished | failed).all()):
                 break
@@ -117,9 +119,10 @@ def main() -> int:
     if int(failed.sum()):
         fg = fail_gate[failed].cpu().numpy()
         kinds = fail_kind[failed].cpu().numpy()
+        names = {0: "?", 1: "hit", 2: "off", 3: "overspeed", 4: "timeout"}
         hist = {}
         for g, k in zip(fg, kinds):
-            key = f"g{g}" + ("/hit" if k == 1 else "")
+            key = f"g{g}/{names.get(int(k), '?')}"
             hist[key] = hist.get(key, 0) + 1
         top = sorted(hist.items(), key=lambda kv: -kv[1])[:8]
         print("  failures by gate:", dict(top))

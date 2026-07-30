@@ -72,7 +72,7 @@ class FastEnvConfig:
     random_start_frac: float = 0.6
     start_noise_pos_m: float = 1.0
     start_noise_vel_mps: float = 1.0
-    speed_cap_mps: float = 14.0
+    speed_cap_mps: float = 16.0
 
 
 class FastVQ2Env:
@@ -143,6 +143,14 @@ class FastVQ2Env:
                 k: t(np.asarray(v, np.float32), device=self.device)
                 for k, v in demo_states.items()
             }
+            # launch curriculum: overweight early-course demo states so
+            # the parked->flying transition is rehearsed constantly
+            gate_arr = self.demo["gate"]
+            w = 1.0 + 5.0 * (gate_arr <= 1).float()
+            self.demo_weights = w / w.sum()
+        self.spawn_flag = torch.zeros(
+            cfg.n_envs, dtype=torch.bool, device=self.device
+        )
 
         z = lambda *shape: torch.zeros(*shape, device=self.device)
         self.p = z(n, 3)
@@ -217,7 +225,9 @@ class FastVQ2Env:
         tgt = torch.zeros(n, dtype=torch.long, device=dev)
         if self.demo is not None:
             m = use_demo
-            k = torch.randint(0, len(self.demo["pos"]), (n,), device=dev)
+            k = torch.multinomial(
+                self.demo_weights, n, replacement=True
+            )
             p = torch.where(m[:, None], self.demo["pos"][k], p)
             v = torch.where(m[:, None], self.demo["vel"][k], v)
             q = torch.where(m[:, None], self.demo["quat"][k], q)
@@ -246,6 +256,10 @@ class FastVQ2Env:
             * torch.rand(n, 1, device=dev)
         )
         self.progress[idx] = self._course_progress(p, tgt)
+        if self.demo is not None:
+            self.spawn_flag[idx] = ~use_demo
+        else:
+            self.spawn_flag[idx] = True
         u = lambda lo, hi, *s: lo + (hi - lo) * torch.rand(*s, device=dev)
         self.dr_thrust[idx] = u(*cfg.dr_thrust, n, 1)
         self.dr_K[idx] = u(*cfg.dr_rate_gain, n, 3)
@@ -324,6 +338,12 @@ class FastVQ2Env:
         )
         wire_thrust = torch.clamp(
             0.5 * (eff[:, 3] + 1.0), max=cfg.thrust_wire_cap
+        )
+        # mirror the live stack's launch assist: guaranteed minimum
+        # thrust while separating from the pad on gate 0
+        assist = (self.target == 0) & (self.t_ep < 0.55)
+        wire_thrust = torch.where(
+            assist, torch.clamp(wire_thrust, min=0.30), wire_thrust
         )
 
         K = (
@@ -434,7 +454,12 @@ class FastVQ2Env:
         timeout_gate = self.t_gate > gate_limit
         timeout_ep = self.t_ep > cfg.max_episode_s
         reward = reward - hit.float() * cfg.collision_penalty
-        reward = reward - (off | overspeed).float() * cfg.offtrack_penalty
+        # every non-finish terminal costs the same order as crashing --
+        # otherwise sitting on the pad (time penalty only) is the
+        # rational policy and launch is never learned
+        reward = reward - (
+            off | overspeed | timeout_gate
+        ).float() * cfg.offtrack_penalty
 
         terminated = hit | off | overspeed | timeout_gate | finished
         truncated = timeout_ep & ~terminated
@@ -449,7 +474,13 @@ class FastVQ2Env:
             "hit": hit,
             "finished": finished,
             "off": off,
+            "overspeed": overspeed,
+            "timeout": timeout_gate,
+            "speed": torch.linalg.norm(self.v, dim=-1),
+            "t_ep": self.t_ep.clone(),
             "target": self.target.clone(),
+            "spawn_done": done & self.spawn_flag,
+            "spawn_launched": done & self.spawn_flag & (self.target > 0),
         }
         idx = torch.nonzero(done).squeeze(-1)
         if len(idx):

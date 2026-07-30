@@ -235,6 +235,7 @@ def main() -> int:
         DN = torch.zeros(args.horizon, args.n_envs, device=device)
         VL = torch.zeros(args.horizon + 1, args.n_envs, device=device)
         pass_ct = hit_ct = fin_ct = ep_ct = 0
+        spawn_done_ct = spawn_launch_ct = 0
         gate_max = 0
         for h in range(args.horizon):
             act, raw, logp, val = policy_sample(obs)
@@ -249,6 +250,8 @@ def main() -> int:
             hit_ct += int(info["hit"].sum())
             fin_ct += int(info["finished"].sum())
             ep_ct += int(done.sum())
+            spawn_done_ct += int(info["spawn_done"].sum())
+            spawn_launch_ct += int(info["spawn_launched"].sum())
             gate_max = max(gate_max, int(info["target"].max()))
         with torch.no_grad():
             VL[args.horizon] = critic(normalize(obs)).squeeze(-1)
@@ -335,6 +338,10 @@ def main() -> int:
                 "finish": fin_ct,
                 "episodes": ep_ct,
                 "gate_max": gate_max,
+                "spawn_launch_rate": round(
+                    spawn_launch_ct / max(spawn_done_ct, 1), 3
+                ),
+                "spawn_eps": spawn_done_ct,
                 "pi_loss": float(np.mean(pi_losses)),
                 "v_loss": float(np.mean(v_losses)),
                 "log_std": [round(float(v), 2) for v in log_std],
