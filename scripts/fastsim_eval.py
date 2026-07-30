@@ -46,6 +46,8 @@ def main() -> int:
     parser.add_argument("--reloc-events", action="store_true",
                         help="structured coast-and-snap estimator error "
                              "(measured reloc statistics)")
+    parser.add_argument("--demo-corridor", type=float, default=2.0)
+    parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--no-dr", action="store_true")
     parser.add_argument("--max-steps", type=int, default=1600)
     args = parser.parse_args()
@@ -56,6 +58,8 @@ def main() -> int:
         random_start_frac=0.0,          # ALL spawn starts
         rate_gain_sign=1.0,
         reloc_events=args.reloc_events,
+        demo_corridor_m=args.demo_corridor,
+        speed_cap_mps=args.speed_cap,
     )
     if args.no_noise:
         cfg.pos_noise_lo = cfg.pos_noise_hi = 0.0

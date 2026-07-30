@@ -465,8 +465,18 @@ class FastVQ2Env:
             * torch.randn(n, 3, device=dev)
         )
         if cfg.reloc_events:
+            # close-range gate fusion prevents belief coasting: no drift
+            # events start near the target gate (matches the real filter)
+            gi_n = torch.clamp(self.target, max=N_GATES - 1)
+            near_gate = torch.linalg.norm(
+                self.gate_pos[gi_n] - self.p, dim=-1
+            ) < 9.0
             # start a drift event
-            start = self.t_ep >= self.reloc_next_t
+            start = (self.t_ep >= self.reloc_next_t) & ~near_gate
+            self.reloc_next_t = torch.where(
+                (self.t_ep >= self.reloc_next_t) & near_gate,
+                self.t_ep + 1.0, self.reloc_next_t,
+            )
             if start.any():
                 k = int(start.sum())
                 dur = (cfg.reloc_drift_s[0]

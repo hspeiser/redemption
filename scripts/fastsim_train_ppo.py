@@ -158,6 +158,8 @@ def main() -> int:
                              "behavior-clone the actor before PPO")
     parser.add_argument("--bc-steps", type=int, default=3000)
     parser.add_argument("--reloc-events", action="store_true")
+    parser.add_argument("--demo-corridor", type=float, default=2.0)
+    parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--resume", default="")
     args = parser.parse_args()
     run_dir = Path(args.run_dir)
@@ -177,7 +179,9 @@ def main() -> int:
     print(f"demo states for random starts: {len(demo['pos'])}")
 
     cfg = FastEnvConfig(n_envs=args.n_envs, rate_gain_sign=float(sign),
-                        reloc_events=args.reloc_events)
+                        reloc_events=args.reloc_events,
+                        demo_corridor_m=args.demo_corridor,
+                        speed_cap_mps=args.speed_cap)
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device))
 
