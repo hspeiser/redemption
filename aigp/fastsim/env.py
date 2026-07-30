@@ -56,6 +56,10 @@ class FastEnvConfig:
     action_smoothness: float = 0.02
     clearance_bonus: float = 6.0       # scaled by hole-center clearance
     corridor_m: float = 8.0
+    # tube around the DEMONSTRATED path (which threads all the real
+    # scenery -- pillars/jets the surrogate cannot model). When demo
+    # states exist, the corridor uses the flown line at this radius.
+    demo_corridor_m: float = 2.0
     offtrack_penalty: float = 30.0
     gate_timeout_s: float = 6.0
     # estimator noise (OU) ranges, sampled per episode -- matched to the
@@ -80,8 +84,8 @@ class FastEnvConfig:
     rate_gain_sign: float = 1.0        # pinned by attitude check
     thrust_wire_cap: float = 0.52      # live stack caps wire thrust
     random_start_frac: float = 0.6
-    start_noise_pos_m: float = 1.0
-    start_noise_vel_mps: float = 1.0
+    start_noise_pos_m: float = 0.4
+    start_noise_vel_mps: float = 0.8
     speed_cap_mps: float = 16.0
 
 
@@ -174,6 +178,16 @@ class FastVQ2Env:
         self.spawn_flag = torch.zeros(
             cfg.n_envs, dtype=torch.bool, device=self.device
         )
+        # demo-path corridor segments (subsampled for speed)
+        self.demo_path = None
+        if self.demo is not None and len(self.demo["pos"]) > 10:
+            dp = self.demo["pos"][::3]           # ~10 Hz spacing
+            self.demo_path_a = dp[:-1]
+            self.demo_path_d = dp[1:] - dp[:-1]
+            self.demo_path_len2 = (
+                self.demo_path_d * self.demo_path_d
+            ).sum(-1).clamp(min=1e-9)
+            self.demo_path = True
 
         z = lambda *shape: torch.zeros(*shape, device=self.device)
         self.p = z(n, 3)
@@ -527,6 +541,16 @@ class FastVQ2Env:
 
         corridor, below = self._corridor_dist(self.p)
         off = (corridor > cfg.corridor_m) | (below > 3.0)
+        if self.demo_path is not None:
+            f = ((self.p[:, None] - self.demo_path_a[None])
+                 * self.demo_path_d[None]).sum(-1) / self.demo_path_len2
+            f = torch.clamp(f, 0.0, 1.0)
+            closest = self.demo_path_a[None] \
+                + f[..., None] * self.demo_path_d[None]
+            demo_dist = torch.linalg.norm(
+                closest - self.p[:, None], dim=-1
+            ).min(dim=1).values
+            off = off | (demo_dist > cfg.demo_corridor_m)
         overspeed = torch.linalg.norm(self.v, dim=-1) > cfg.speed_cap_mps
         gate_limit = torch.where(
             self.target == 0,

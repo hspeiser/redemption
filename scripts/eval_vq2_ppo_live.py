@@ -151,7 +151,11 @@ def main() -> int:
         dense_worker_threads=args.vision_worker_threads,
         dense_worker_affinity=args.vision_worker_affinity,
     )
-    environment = VQ2LiveEnv(mavlink, localizer, VQ2EnvConfig())
+    # match the surrogate's training envelope: the 12 m/s default is the
+    # SAC trainer's safety guard, not a sim or competition rule
+    environment = VQ2LiveEnv(
+        mavlink, localizer, VQ2EnvConfig(speed_cap_mps=16.0)
+    )
 
     results = []
     try:
@@ -161,6 +165,7 @@ def main() -> int:
             steps = 0
             ep_reward = 0.0
             step_info = {}
+            step_log = []
             while not done:
                 action = act(observation)
                 observation, reward, term, trunc, step_info = \
@@ -168,6 +173,15 @@ def main() -> int:
                 ep_reward += float(reward)
                 steps += 1
                 done = term or trunc
+                step_log.append({
+                    "p": [round(v, 3) for v in step_info["position"]],
+                    "tgt": int(step_info["target"]),
+                    "spd": round(float(step_info["speed"]), 2),
+                    "sig": round(float(step_info["position_sigma_m"]), 3),
+                    "va": round(float(step_info["visual_age_s"]), 2),
+                })
+            with open(str(args.log) + f".ep{ep_i}.steps.json", "w") as fh:
+                json.dump(step_log, fh)
             row = {
                 "episode": ep_i,
                 "reward": round(ep_reward, 1),
