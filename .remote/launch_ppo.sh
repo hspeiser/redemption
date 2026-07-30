@@ -17,7 +17,7 @@ nohup .venv/bin/python scripts/fastsim_train_ppo.py \
   --device cuda --run-dir data/fastsim_runs/ppo_v1 \
   --model data/fastsim_model.json --map data/vq2_map_final.json \
   --rate-sign 1 --demo-npz data/fastsim_demo_states.npz \
-  --bc-init data/vq2_sac_clean_demo.npz \
+  --bc-init data/vq2_sac_clean_demo.npz --entropy 3e-3 \
   > data/fastsim_runs/ppo_v1/stdout.log 2>&1 &
 echo "launched pid $!"
 sleep 60

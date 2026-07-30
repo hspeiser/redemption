@@ -1,0 +1,57 @@
+﻿monitor start 07/30/2026 10:03:34
+===== check 0 07/30/2026 10:18:41 =====
+== proc ==
+110859 .venv/bin/python scripts/fastsim_train_ppo.py --iters 6000 --n-envs 4096 --horizon 64 --minibatch 16384 --device cuda --run-dir data/fastsim_runs/ppo_v1 --model data/fastsim_model.json --map data/vq2_map_final.json --rate-sign 1 --demo-npz data/fastsim_demo_states.npz
+== last log ==
+{"iter": 1089, "steps_per_s": 291517, "reward_mean": 0.10538576543331146, "pass_per_ep": 0.02920284135753749, "hit_frac": 0.022099447513812154, "finish": 26, "episodes": 1267, "gate_max": 17, "pi_loss": -0.004378325455036247, "v_loss": 90.7858094573021, "log_std": [-0.82, -0.78, -0.51, -0.58]}
+{"iter": 1090, "steps_per_s": 291524, "reward_mean": 0.11773976683616638, "pass_per_ep": 0.03368083400160385, "hit_frac": 0.020048115477145148, "finish": 31, "episodes": 1247, "gate_max": 17, "pi_loss": -0.004092651226528687, "v_loss": 78.02247452735901, "log_std": [-0.82, -0.77, -0.5, -0.58]}
+{"iter": 1091, "steps_per_s": 291541, "reward_mean": 0.1101490706205368, "pass_per_ep": 0.03209876543209877, "hit_frac": 0.031275720164609055, "finish": 30, "episodes": 1215, "gate_max": 17, "pi_loss": -0.003851147041132208, "v_loss": 117.04444402456284, "log_std": [-0.82, -0.77, -0.5, -0.59]}
+== eval latest checkpoint (spawn starts, noise+DR on) ==
+checkpoint iter 1000
+
+spawn-start eval over 1024 randomized worlds (noise=on, dr=on):
+  FINISHED FULL COURSE: 0/1024 = 0.0%
+  failures by gate: {'g0': 1024}
+
+===== check 1 07/30/2026 10:33:48 =====
+== proc ==
+110859 .venv/bin/python scripts/fastsim_train_ppo.py --iters 6000 --n-envs 4096 --horizon 64 --minibatch 16384 --device cuda --run-dir data/fastsim_runs/ppo_v1 --model data/fastsim_model.json --map data/vq2_map_final.json --rate-sign 1 --demo-npz data/fastsim_demo_states.npz
+== last log ==
+{"iter": 2095, "steps_per_s": 291182, "reward_mean": 0.12974056601524353, "pass_per_ep": 0.03409992069785884, "hit_frac": 0.020618556701030927, "finish": 37, "episodes": 1261, "gate_max": 17, "pi_loss": -0.0038394996627175715, "v_loss": 37.9203859269619, "log_std": [-0.92, -0.77, 0.02, -0.33]}
+{"iter": 2096, "steps_per_s": 291182, "reward_mean": 0.12088598310947418, "pass_per_ep": 0.03437250199840128, "hit_frac": 0.01838529176658673, "finish": 32, "episodes": 1251, "gate_max": 17, "pi_loss": -0.004659590016672155, "v_loss": 88.86497569084167, "log_std": [-0.92, -0.78, 0.02, -0.33]}
+{"iter": 2097, "steps_per_s": 291179, "reward_mean": 0.1149621531367302, "pass_per_ep": 0.03164029975020816, "hit_frac": 0.01665278934221482, "finish": 29, "episodes": 1201, "gate_max": 17, "pi_loss": -0.004976953652658267, "v_loss": 69.37603971362114, "log_std": [-0.92, -0.77, 0.02, -0.33]}
+== eval latest checkpoint (spawn starts, noise+DR on) ==
+checkpoint iter 2000
+
+spawn-start eval over 1024 randomized worlds (noise=on, dr=on):
+  FINISHED FULL COURSE: 0/1024 = 0.0%
+  failures by gate: {'g0': 1024}
+
+===== check 2 07/30/2026 10:48:56 =====
+== proc ==
+111829 .venv/bin/python scripts/fastsim_train_ppo.py --iters 6000 --n-envs 4096 --horizon 64 --minibatch 16384 --device cuda --run-dir data/fastsim_runs/ppo_v1 --model data/fastsim_model.json --map data/vq2_map_final.json --rate-sign 1 --demo-npz data/fastsim_demo_states.npz
+== last log ==
+{"iter": 80, "steps_per_s": 276583, "reward_mean": -0.23400966823101044, "pass_per_ep": 0.014925373134328358, "hit_frac": 0.029850746268656716, "finish": 0, "episodes": 1206, "gate_max": 16, "spawn_launch_rate": 0.0, "spawn_eps": 493, "pi_loss": -0.003268169961302192, "v_loss": 11.083621576428413, "log_std": [-1.02, -1.11, -0.96, -0.96]}
+{"iter": 85, "steps_per_s": 277649, "reward_mean": -0.2370823621749878, "pass_per_ep": 0.013589128697042365, "hit_frac": 0.037569944044764186, "finish": 1, "episodes": 1251, "gate_max": 17, "spawn_launch_rate": 0.0, "spawn_eps": 513, "pi_loss": -0.0032850626475919853, "v_loss": 21.538968920707703, "log_std": [-1.06, -1.12, -0.99, -0.98]}
+{"iter": 90, "steps_per_s": 277348, "reward_mean": -0.2290678769350052, "pass_per_ep": 0.008403361344537815, "hit_frac": 0.03613445378151261, "finish": 0, "episodes": 1190, "gate_max": 16, "spawn_launch_rate": 0.0, "spawn_eps": 458, "pi_loss": -0.002509720621674205, "v_loss": 15.100769773125648, "log_std": [-1.08, -1.13, -1.01, -0.99]}
+== eval latest checkpoint (spawn starts, noise+DR on) ==
+checkpoint iter 100
+
+spawn-start eval over 1024 randomized worlds (noise=on, dr=on):
+  FINISHED FULL COURSE: 0/1024 = 0.0%
+  failures by gate: {'g0/timeout': 1024}
+
+===== check 3 07/30/2026 11:04:05 =====
+== proc ==
+112613 .venv/bin/python scripts/fastsim_train_ppo.py --iters 6000 --n-envs 4096 --horizon 64 --minibatch 16384 --device cuda --run-dir data/fastsim_runs/ppo_v1 --model data/fastsim_model.json --map data/vq2_map_final.json --rate-sign 1 --demo-npz data/fastsim_demo_states.npz --bc-init data/vq2_sac_clean_demo.npz --entropy 3e-3
+== last log ==
+{"iter": 53, "steps_per_s": 274725, "reward_mean": 1.6754844188690186, "pass_per_ep": 12.216919739696312, "hit_frac": 0.42733188720173537, "finish": 212, "episodes": 461, "gate_max": 17, "spawn_launch_rate": 0.995, "spawn_eps": 194, "pi_loss": -0.008940485531638842, "v_loss": 1352.6333808898926, "log_std": [-0.82, -0.8, -0.73, -0.78]}
+{"iter": 54, "steps_per_s": 275220, "reward_mean": 1.7329097986221313, "pass_per_ep": 11.832285115303984, "hit_frac": 0.36477987421383645, "finish": 234, "episodes": 477, "gate_max": 17, "spawn_launch_rate": 1.0, "spawn_eps": 176, "pi_loss": -0.008806723337329458, "v_loss": 1413.9025287628174, "log_std": [-0.82, -0.8, -0.73, -0.78]}
+{"iter": 55, "steps_per_s": 275155, "reward_mean": 1.7678823471069336, "pass_per_ep": 11.007707129094412, "hit_frac": 0.4007707129094412, "finish": 245, "episodes": 519, "gate_max": 17, "spawn_launch_rate": 0.99, "spawn_eps": 192, "pi_loss": -0.009117836350924335, "v_loss": 1399.8310241699219, "log_std": [-0.82, -0.8, -0.73, -0.78]}
+== eval latest checkpoint (spawn starts, noise+DR on) ==
+checkpoint iter 0
+
+spawn-start eval over 1024 randomized worlds (noise=on, dr=on):
+  FINISHED FULL COURSE: 0/1024 = 0.0%
+  failures by gate: {'g0/off': 826, 'g0/timeout': 117, 'g0/hit': 74, 'g1/off': 5, 'g0/overspeed': 1, 'g1/timeout': 1}
+
