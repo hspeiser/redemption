@@ -49,16 +49,19 @@ class FastEnvConfig:
     progress_scale: float = 2.0
     gate_bonus: float = 25.0
     finish_bonus: float = 600.0
-    collision_penalty: float = 100.0
+    # crashing must NOT dominate timing out, or the policy learns that
+    # gates are lava and steers around every plane crossing
+    collision_penalty: float = 30.0
     time_penalty_per_s: float = 0.8
     action_smoothness: float = 0.02
     clearance_bonus: float = 6.0       # scaled by hole-center clearance
     corridor_m: float = 8.0
-    offtrack_penalty: float = 60.0
+    offtrack_penalty: float = 30.0
     gate_timeout_s: float = 6.0
-    # estimator noise (OU) ranges, sampled per episode
-    pos_noise_lo: float = 0.03
-    pos_noise_hi: float = 0.45
+    # estimator noise (OU) ranges, sampled per episode -- matched to the
+    # MEASURED EKF (3-10 cm through-gate, tens of cm between gates)
+    pos_noise_lo: float = 0.02
+    pos_noise_hi: float = 0.15
     pos_noise_tau_s: float = 1.2
     att_noise_deg_hi: float = 2.0
     # domain randomization ranges (multipliers)
@@ -148,6 +151,19 @@ class FastVQ2Env:
             gate_arr = self.demo["gate"]
             w = 1.0 + 5.0 * (gate_arr <= 1).float()
             self.demo_weights = w / w.sum()
+            # "spawn" start = just-lifted state (the live stack's scripted
+            # launch assist owns pad separation; the policy's job begins
+            # airborne). Pick the first demo row past 1.5 m/s on gate 0.
+            speed = torch.linalg.norm(self.demo["vel"], dim=1)
+            cand = torch.nonzero(
+                (self.demo["gate"] == 0) & (speed > 1.5)
+            ).squeeze(-1)
+            k0 = int(cand[0]) if len(cand) else 0
+            self.launch_state = {
+                "pos": self.demo["pos"][k0].clone(),
+                "vel": self.demo["vel"][k0].clone(),
+                "quat": self.demo["quat"][k0].clone(),
+            }
         self.spawn_flag = torch.zeros(
             cfg.n_envs, dtype=torch.bool, device=self.device
         )
@@ -215,13 +231,20 @@ class FastVQ2Env:
             self.demo is not None
             and torch.rand(n, device=dev) < cfg.random_start_frac
         )
-        # default: spawn start (parked, pitched pad)
-        p = torch.tensor([0.0, 0.0, -0.3], device=dev).repeat(n, 1)
-        v = torch.zeros(n, 3, device=dev)
-        pitch = torch.tensor(-17.8 * np.pi / 360.0, device=dev)
-        q = torch.zeros(n, 4, device=dev)
-        q[:, 0] = torch.cos(pitch)
-        q[:, 2] = torch.sin(pitch)
+        # default "spawn" start: just-lifted post-launch-assist state
+        if self.demo is not None:
+            p = self.launch_state["pos"].repeat(n, 1) \
+                + torch.randn(n, 3, device=dev) * 0.3
+            v = self.launch_state["vel"].repeat(n, 1) \
+                + torch.randn(n, 3, device=dev) * 0.4
+            q = self.launch_state["quat"].repeat(n, 1)
+        else:
+            p = torch.tensor([0.0, 0.0, -0.8], device=dev).repeat(n, 1)
+            v = torch.zeros(n, 3, device=dev)
+            pitch = torch.tensor(-17.8 * np.pi / 360.0, device=dev)
+            q = torch.zeros(n, 4, device=dev)
+            q[:, 0] = torch.cos(pitch)
+            q[:, 2] = torch.sin(pitch)
         tgt = torch.zeros(n, dtype=torch.long, device=dev)
         if self.demo is not None:
             m = use_demo

@@ -40,6 +40,8 @@ def main() -> int:
                                                "fastsim_model.json"))
     parser.add_argument("--map", default=str(REPO / "data" /
                                              "vq2_map_final.json"))
+    parser.add_argument("--demo-npz", default=str(
+        REPO / "data" / "fastsim_demo_states.npz"))
     parser.add_argument("--no-noise", action="store_true")
     parser.add_argument("--no-dr", action="store_true")
     parser.add_argument("--max-steps", type=int, default=1600)
@@ -60,7 +62,8 @@ def main() -> int:
         cfg.dr_drag = (0.3, 0.3)
         cfg.act_delay_steps_max = 0
     model = SurrogateModel.load(args.model)
-    env = FastVQ2Env(model, args.map, demo_states=None, config=cfg,
+    demo = dict(np.load(args.demo_npz)) if args.demo_npz else None
+    env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device))
 
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)

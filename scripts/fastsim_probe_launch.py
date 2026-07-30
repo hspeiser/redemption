@@ -45,8 +45,10 @@ def main() -> int:
         dr_rate_tau=(1.0, 1.0), dr_drag=(0.3, 0.3),
         act_delay_steps_max=0,
     )
+    demo_path = REPO / "data" / "fastsim_demo_states.npz"
+    demo = dict(np.load(demo_path)) if demo_path.exists() else None
     env = FastVQ2Env(SurrogateModel.load(args.model), args.map,
-                     config=cfg, device=str(device))
+                     demo_states=demo, config=cfg, device=str(device))
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
     actor = GaussianActor(OBS_DIM, ACT_DIM).to(device)
     actor.load_state_dict(ck["actor"])
