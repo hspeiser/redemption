@@ -5,7 +5,7 @@
 |---|---|---|---|
 | `vq2_ppo_conservative.pt` | 99.3% @ 20.97s | 96.4% | Henry-like, zero saturation — **attempt 1** |
 | `vq2_ppo_champion.pt` | 99.4% @ 18.07s | 97.4% | bang-bang racer — attempt 2 |
-| `vq2_ppo_flight.pt` (if produced) | — | target ≥98.5% | champion fine-tuned on reloc noise |
+| ~~`vq2_ppo_flight.pt`~~ | 97.0% | 94.8% | fine-tune REJECTED: faster (17.9s) but less reliable (exploration-std blowup on resume degraded the deterministic policy). Flight lineup stays conservative -> champion. |
 
 Structured noise = coast-and-snap estimator error measured on the real
 certified lap (0.4–1.5 m reloc jumps every 6–14 s + 2–15 cm OU) — heavier
