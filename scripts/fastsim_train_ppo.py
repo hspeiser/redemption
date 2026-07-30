@@ -153,6 +153,10 @@ def main() -> int:
     parser.add_argument("--demo-npz", default="",
                         help="precomputed demo-state npz (pos/vel/quat/"
                              "gate); skips trace+episode loading")
+    parser.add_argument("--bc-init", default="",
+                        help="live demo npz (observation/action) to "
+                             "behavior-clone the actor before PPO")
+    parser.add_argument("--bc-steps", type=int, default=3000)
     parser.add_argument("--resume", default="")
     args = parser.parse_args()
     run_dir = Path(args.run_dir)
@@ -205,6 +209,29 @@ def main() -> int:
         return torch.clamp(
             (o - obs_mean) / torch.sqrt(obs_var + 1e-6), -8.0, 8.0
         )
+
+    if args.bc_init and not args.resume and start_iter == 0:
+        bc = np.load(args.bc_init)
+        bc_obs = torch.tensor(bc["observation"], dtype=torch.float32,
+                              device=device)
+        bc_act = torch.tensor(bc["action"], dtype=torch.float32,
+                              device=device)
+        # seed the normalizer from the demonstration distribution
+        obs_mean = bc_obs.mean(0)
+        obs_var = bc_obs.var(0) + 1e-3
+        obs_count = float(len(bc_obs))
+        bc_opt = torch.optim.Adam(actor.parameters(), lr=1e-3)
+        target_raw = torch.atanh(torch.clamp(bc_act, -0.999, 0.999))
+        for step in range(args.bc_steps):
+            k = torch.randint(0, len(bc_obs), (256,), device=device)
+            mean, _ = actor.distribution(normalize(bc_obs[k]))
+            loss = F.mse_loss(mean, target_raw[k])
+            bc_opt.zero_grad(set_to_none=True)
+            loss.backward()
+            bc_opt.step()
+            if step % 1000 == 0:
+                print(f"bc-init step {step}: loss {float(loss):.4f}")
+        print(f"bc-init done ({len(bc_obs)} demo pairs)")
 
     @torch.no_grad()
     def policy_sample(o):

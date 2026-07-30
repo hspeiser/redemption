@@ -279,6 +279,12 @@ class FastVQ2Env:
         return self.cum_len[tgt] + along
 
     def _corridor_dist(self, p):
+        """(distance to track polyline, height below the local track line).
+
+        dz > ~3 m means below the local floor anywhere on the course
+        (gates sit 1.4-2 m above their floor) -- kills the underground
+        loitering exploit without needing a terrain model.
+        """
         a = self.track_points[:-1][None]      # (1,S,3)
         b = self.track_points[1:][None]
         d = b - a
@@ -286,7 +292,11 @@ class FastVQ2Env:
         f = ((p[:, None] - a) * d).sum(-1) / (denom + 1e-9)
         f = torch.clamp(f, 0.0, 1.0)
         c = a + f[..., None] * d
-        return torch.linalg.norm(c - p[:, None], dim=-1).min(dim=1).values
+        dist = torch.linalg.norm(c - p[:, None], dim=-1)
+        k = dist.argmin(dim=1)
+        rows = torch.arange(len(p), device=p.device)
+        below = p[:, 2] - c[rows, k, 2]       # z down: positive = lower
+        return dist[rows, k], below
 
     def observations(self) -> torch.Tensor:
         R = self._qmat(self.q)                    # body->world
@@ -443,8 +453,8 @@ class FastVQ2Env:
         finished = self.target >= N_GATES
         reward = reward + finished.float() * cfg.finish_bonus
 
-        corridor = self._corridor_dist(self.p)
-        off = corridor > cfg.corridor_m
+        corridor, below = self._corridor_dist(self.p)
+        off = (corridor > cfg.corridor_m) | (below > 3.0)
         overspeed = torch.linalg.norm(self.v, dim=-1) > cfg.speed_cap_mps
         gate_limit = torch.where(
             self.target == 0,
