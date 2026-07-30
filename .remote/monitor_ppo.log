@@ -55,3 +55,20 @@ spawn-start eval over 1024 randomized worlds (noise=on, dr=on):
   FINISHED FULL COURSE: 0/1024 = 0.0%
   failures by gate: {'g0/off': 826, 'g0/timeout': 117, 'g0/hit': 74, 'g1/off': 5, 'g0/overspeed': 1, 'g1/timeout': 1}
 
+===== check 4 07/30/2026 11:19:18 =====
+== proc ==
+112613 .venv/bin/python scripts/fastsim_train_ppo.py --iters 6000 --n-envs 4096 --horizon 64 --minibatch 16384 --device cuda --run-dir data/fastsim_runs/ppo_v1 --model data/fastsim_model.json --map data/vq2_map_final.json --rate-sign 1 --demo-npz data/fastsim_demo_states.npz --bc-init data/vq2_sac_clean_demo.npz --entropy 3e-3
+== last log ==
+{"iter": 1005, "steps_per_s": 274557, "reward_mean": 2.8943350315093994, "pass_per_ep": 14.123693379790941, "hit_frac": 0.06620209059233449, "finish": 519, "episodes": 574, "gate_max": 17, "spawn_launch_rate": 1.0, "spawn_eps": 224, "pi_loss": -0.024121595080941916, "v_loss": 226.0668225288391, "log_std": [0.44, -0.37, 1.45, 0.26]}
+{"iter": 1006, "steps_per_s": 274562, "reward_mean": 2.844860076904297, "pass_per_ep": 14.896869244935543, "hit_frac": 0.03314917127071823, "finish": 497, "episodes": 543, "gate_max": 17, "spawn_launch_rate": 1.0, "spawn_eps": 233, "pi_loss": -0.02420370202162303, "v_loss": 214.431293964386, "log_std": [0.44, -0.37, 1.45, 0.26]}
+{"iter": 1007, "steps_per_s": 274579, "reward_mean": 2.944927215576172, "pass_per_ep": 13.74915824915825, "hit_frac": 0.04208754208754209, "finish": 538, "episodes": 594, "gate_max": 17, "spawn_launch_rate": 0.996, "spawn_eps": 244, "pi_loss": -0.025185732010868378, "v_loss": 267.749187707901, "log_std": [0.44, -0.37, 1.46, 0.26]}
+== eval latest checkpoint (spawn starts, noise+DR on) ==
+checkpoint iter 1000
+
+spawn-start eval over 1024 randomized worlds (noise=on, dr=on):
+  FINISHED FULL COURSE: 1011/1024 = 98.7%
+  lap time: median 18.07s  best 17.23s  p90 18.57s
+  failures by gate: {'g9/hit': 7, 'g15/overspeed': 2, 'g16/hit': 1, 'g1/hit': 1, 'g2/hit': 1, 'g11/overspeed': 1}
+
+MILESTONE: 1011/1024 finished - stopping monitor
+monitor end 07/30/2026 11:19:18
