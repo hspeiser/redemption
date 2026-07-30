@@ -85,8 +85,10 @@ def main() -> int:
     )
     parser.add_argument("--mav-port", type=int, default=14550)
     parser.add_argument("--camera-port", type=int, default=5600)
-    # the isolation configuration that fixed real-time health (v29+)
-    parser.add_argument("--vision-hz", type=float, default=2.0)
+    # isolation config per v29+, but vision at 5 Hz: during eval flights
+    # no learner shares the CPU, and faster cadence shrinks the
+    # inter-gate landmark droughts that killed round-2 episodes
+    parser.add_argument("--vision-hz", type=float, default=5.0)
     parser.add_argument("--vision-device", default="cpu")
     parser.add_argument("--max-vision-result-age", type=float, default=1.0)
     parser.add_argument("--vision-process-isolation", default=True,

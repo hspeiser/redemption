@@ -72,9 +72,15 @@ class FastEnvConfig:
     # every ~6-14s the belief drifts for 0.3-1.2s up to 0.4-1.5m, then
     # SNAPS back in one step (the relocalization correction)
     reloc_events: bool = False
-    reloc_interval_s: tuple = (6.0, 14.0)
-    reloc_drift_s: tuple = (0.3, 1.2)
-    reloc_mag_m: tuple = (0.4, 1.5)
+    reloc_interval_s: tuple = (5.0, 12.0)
+    # vision droughts run seconds in the real stack (landmark age up to
+    # ~3 s between gates); the policy must fly through them on momentum
+    reloc_drift_s: tuple = (0.4, 3.0)
+    reloc_mag_m: tuple = (0.4, 1.6)
+    # live-guard parity (VQ2LiveEnv terminals mirrored)
+    max_tilt_deg: float = 80.0
+    live_gate_timeout_s: float = 4.5
+    no_progress_s: float = 1.5
     # domain randomization ranges (multipliers)
     dr_thrust: tuple = (0.85, 1.15)
     dr_rate_gain: tuple = (0.85, 1.15)
@@ -207,6 +213,8 @@ class FastVQ2Env:
         self.reloc_end_t = z(n)
         self.reloc_dir = z(n, 3)
         self.reloc_rate = z(n)
+        self.best_prog = z(n)
+        self.t_best = z(n)
         self.progress = z(n)
         # DR params
         self.dr_thrust = z(n, 1)
@@ -304,6 +312,8 @@ class FastVQ2Env:
             * torch.rand(n, 1, device=dev)
         )
         self.progress[idx] = self._course_progress(p, tgt)
+        self.best_prog[idx] = self.progress[idx]
+        self.t_best[idx] = 0.0
         if self.demo is not None:
             self.spawn_flag[idx] = ~use_demo
         else:
@@ -564,10 +574,26 @@ class FastVQ2Env:
         overspeed = torch.linalg.norm(self.v, dim=-1) > cfg.speed_cap_mps
         gate_limit = torch.where(
             self.target == 0,
-            torch.full_like(self.t_gate, cfg.gate_timeout_s + 3.0),
-            torch.full_like(self.t_gate, cfg.gate_timeout_s),
+            torch.full_like(self.t_gate, cfg.live_gate_timeout_s + 3.0),
+            torch.full_like(self.t_gate, cfg.live_gate_timeout_s),
         )
         timeout_gate = self.t_gate > gate_limit
+        # live tilt guard: body z vs world z (z down, upright ~ +1)
+        R_now = self._qmat(self.q)
+        tilt_cos = R_now[:, 2, 2]
+        inverted = tilt_cos < float(
+            np.cos(np.deg2rad(cfg.max_tilt_deg))
+        )
+        timeout_gate = timeout_gate | inverted
+        # live no-progress guard
+        improved = progress > self.best_prog + 0.05
+        self.best_prog = torch.where(improved, progress, self.best_prog)
+        self.t_best = torch.where(
+            improved, self.t_ep.clone(), self.t_best
+        )
+        timeout_gate = timeout_gate | (
+            (self.t_ep - self.t_best) > cfg.no_progress_s
+        )
         timeout_ep = self.t_ep > cfg.max_episode_s
         reward = reward - hit.float() * cfg.collision_penalty
         # every non-finish terminal costs the same order as crashing --
