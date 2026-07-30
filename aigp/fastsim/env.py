@@ -64,6 +64,13 @@ class FastEnvConfig:
     pos_noise_hi: float = 0.15
     pos_noise_tau_s: float = 1.2
     att_noise_deg_hi: float = 2.0
+    # structured estimator error (measured on the real certified lap):
+    # every ~6-14s the belief drifts for 0.3-1.2s up to 0.4-1.5m, then
+    # SNAPS back in one step (the relocalization correction)
+    reloc_events: bool = False
+    reloc_interval_s: tuple = (6.0, 14.0)
+    reloc_drift_s: tuple = (0.3, 1.2)
+    reloc_mag_m: tuple = (0.4, 1.5)
     # domain randomization ranges (multipliers)
     dr_thrust: tuple = (0.85, 1.15)
     dr_rate_gain: tuple = (0.85, 1.15)
@@ -182,6 +189,10 @@ class FastVQ2Env:
                                      device=self.device)
         self.noise_pos = z(n, 3)
         self.noise_amp = z(n, 1)
+        self.reloc_next_t = z(n)
+        self.reloc_end_t = z(n)
+        self.reloc_dir = z(n, 3)
+        self.reloc_rate = z(n)
         self.progress = z(n)
         # DR params
         self.dr_thrust = z(n, 1)
@@ -284,6 +295,9 @@ class FastVQ2Env:
         else:
             self.spawn_flag[idx] = True
         u = lambda lo, hi, *s: lo + (hi - lo) * torch.rand(*s, device=dev)
+        self.reloc_next_t[idx] = u(*cfg.reloc_interval_s, n)
+        self.reloc_end_t[idx] = 0.0
+        self.reloc_rate[idx] = 0.0
         self.dr_thrust[idx] = u(*cfg.dr_thrust, n, 1)
         self.dr_K[idx] = u(*cfg.dr_rate_gain, n, 3)
         self.dr_tau[idx] = u(*cfg.dr_rate_tau, n, 3)
@@ -436,6 +450,41 @@ class FastVQ2Env:
             + np.sqrt(1 - rho * rho) * self.noise_amp
             * torch.randn(n, 3, device=dev)
         )
+        if cfg.reloc_events:
+            # start a drift event
+            start = self.t_ep >= self.reloc_next_t
+            if start.any():
+                k = int(start.sum())
+                dur = (cfg.reloc_drift_s[0]
+                       + (cfg.reloc_drift_s[1] - cfg.reloc_drift_s[0])
+                       * torch.rand(k, device=dev))
+                mag = (cfg.reloc_mag_m[0]
+                       + (cfg.reloc_mag_m[1] - cfg.reloc_mag_m[0])
+                       * torch.rand(k, device=dev))
+                d = torch.randn(k, 3, device=dev)
+                d = d / (torch.linalg.norm(d, dim=1, keepdim=True) + 1e-9)
+                self.reloc_dir[start] = d
+                self.reloc_rate[start] = mag / dur
+                self.reloc_end_t[start] = self.t_ep[start] + dur
+                self.reloc_next_t[start] = (
+                    self.t_ep[start] + dur
+                    + cfg.reloc_interval_s[0]
+                    + (cfg.reloc_interval_s[1] - cfg.reloc_interval_s[0])
+                    * torch.rand(k, device=dev)
+                )
+            drifting = self.t_ep < self.reloc_end_t
+            self.noise_pos = self.noise_pos + (
+                drifting.float()[:, None]
+                * self.reloc_dir * self.reloc_rate[:, None] * step_dt
+            )
+            # the snap: drift just ended -> collapse back to baseline
+            snapped = (~drifting) & (self.reloc_end_t > 0) \
+                & (self.t_ep - step_dt < self.reloc_end_t)
+            if snapped.any():
+                self.noise_pos[snapped] = (
+                    self.noise_amp[snapped]
+                    * torch.randn(int(snapped.sum()), 3, device=dev)
+                )
 
         # gate plane events
         new_plane = self._gate_local(self.p)

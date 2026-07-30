@@ -43,6 +43,9 @@ def main() -> int:
     parser.add_argument("--demo-npz", default=str(
         REPO / "data" / "fastsim_demo_states.npz"))
     parser.add_argument("--no-noise", action="store_true")
+    parser.add_argument("--reloc-events", action="store_true",
+                        help="structured coast-and-snap estimator error "
+                             "(measured reloc statistics)")
     parser.add_argument("--no-dr", action="store_true")
     parser.add_argument("--max-steps", type=int, default=1600)
     args = parser.parse_args()
@@ -52,6 +55,7 @@ def main() -> int:
         n_envs=args.n_envs,
         random_start_frac=0.0,          # ALL spawn starts
         rate_gain_sign=1.0,
+        reloc_events=args.reloc_events,
     )
     if args.no_noise:
         cfg.pos_noise_lo = cfg.pos_noise_hi = 0.0

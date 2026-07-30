@@ -157,6 +157,7 @@ def main() -> int:
                         help="live demo npz (observation/action) to "
                              "behavior-clone the actor before PPO")
     parser.add_argument("--bc-steps", type=int, default=3000)
+    parser.add_argument("--reloc-events", action="store_true")
     parser.add_argument("--resume", default="")
     args = parser.parse_args()
     run_dir = Path(args.run_dir)
@@ -175,7 +176,8 @@ def main() -> int:
         np.savez(run_dir / "demo_states.npz", **demo)
     print(f"demo states for random starts: {len(demo['pos'])}")
 
-    cfg = FastEnvConfig(n_envs=args.n_envs, rate_gain_sign=float(sign))
+    cfg = FastEnvConfig(n_envs=args.n_envs, rate_gain_sign=float(sign),
+                        reloc_events=args.reloc_events)
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device))
 
