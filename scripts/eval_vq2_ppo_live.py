@@ -159,10 +159,29 @@ def main() -> int:
         mavlink, localizer, VQ2EnvConfig(speed_cap_mps=16.0)
     )
 
+    def reset_with_retry(max_attempts: int = 6):
+        # Anchor diagnostics are noisy right at spawn (GPU contention with
+        # the sim, transient translation spread).  The SAC trainer survives
+        # these by re-running the countdown; do the same instead of dying.
+        for attempt in range(max_attempts):
+            try:
+                return environment.reset()
+            except RuntimeError as error:
+                message = str(error)
+                transient = (
+                    "spawn visual anchor is inconsistent" in message
+                    or "spawn attitude does not match" in message
+                    or "spawn gate anchor failed" in message
+                )
+                if not transient or attempt == max_attempts - 1:
+                    raise
+                print(f"RESET RETRY {attempt + 1}/{max_attempts}: {message}")
+                time.sleep(1.0)
+
     results = []
     try:
         for ep_i in range(args.episodes):
-            observation, info = environment.reset()
+            observation, info = reset_with_retry()
             done = False
             steps = 0
             ep_reward = 0.0
