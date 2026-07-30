@@ -68,7 +68,8 @@ class FastEnvConfig:
     dr_drag: tuple = (0.1, 0.6)
     act_delay_steps_max: int = 2
     rate_gain_sign: float = 1.0        # pinned by attitude check
-    random_start_frac: float = 0.75
+    thrust_wire_cap: float = 0.52      # live stack caps wire thrust
+    random_start_frac: float = 0.6
     start_noise_pos_m: float = 1.0
     start_noise_vel_mps: float = 1.0
     speed_cap_mps: float = 14.0
@@ -321,7 +322,9 @@ class FastVQ2Env:
         wire_rates = eff[:, :3] * torch.tensor(
             WIRE_RATE_LIMIT, device=dev
         )
-        wire_thrust = 0.5 * (eff[:, 3] + 1.0)
+        wire_thrust = torch.clamp(
+            0.5 * (eff[:, 3] + 1.0), max=cfg.thrust_wire_cap
+        )
 
         K = (
             cfg.rate_gain_sign
@@ -353,6 +356,22 @@ class FastVQ2Env:
             a = g_vec + torch.einsum("nij,nj->ni", R, f_body)
             self.v = self.v + a * dt
             self.p = self.p + self.v * dt
+            # spawn pad ground contact (z down; pad surface z=0 near
+            # spawn): rest instead of falling through the world
+            on_pad = (self.p[:, 2] > -0.02) & (self.p[:, 0] < 8.0) \
+                & (self.p[:, 0].abs() < 12.0) & (self.p[:, 1].abs() < 8.0)
+            if on_pad.any():
+                self.p[:, 2] = torch.where(
+                    on_pad, torch.full_like(self.p[:, 2], -0.02),
+                    self.p[:, 2],
+                )
+                self.v[:, 2] = torch.where(
+                    on_pad & (self.v[:, 2] > 0),
+                    torch.zeros_like(self.v[:, 2]), self.v[:, 2],
+                )
+                self.v[:, :2] = torch.where(
+                    on_pad[:, None], self.v[:, :2] * 0.7, self.v[:, :2]
+                )
 
         step_dt = 1.0 / cfg.control_hz
         self.t_ep += step_dt
@@ -407,7 +426,12 @@ class FastVQ2Env:
         corridor = self._corridor_dist(self.p)
         off = corridor > cfg.corridor_m
         overspeed = torch.linalg.norm(self.v, dim=-1) > cfg.speed_cap_mps
-        timeout_gate = self.t_gate > cfg.gate_timeout_s
+        gate_limit = torch.where(
+            self.target == 0,
+            torch.full_like(self.t_gate, cfg.gate_timeout_s + 3.0),
+            torch.full_like(self.t_gate, cfg.gate_timeout_s),
+        )
+        timeout_gate = self.t_gate > gate_limit
         timeout_ep = self.t_ep > cfg.max_episode_s
         reward = reward - hit.float() * cfg.collision_penalty
         reward = reward - (off | overspeed).float() * cfg.offtrack_penalty
