@@ -158,6 +158,11 @@ def main() -> int:
                              "behavior-clone the actor before PPO")
     parser.add_argument("--bc-steps", type=int, default=3000)
     parser.add_argument("--reloc-events", action="store_true")
+    parser.add_argument("--noise-era", choices=["3hz", "10hz"],
+                        default="3hz",
+                        help="estimator-noise calibration: 3hz = legacy "
+                             "CPU-vision era, 10hz = GPU vision (v77 "
+                             "measured)")
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--obstacles", default="")
@@ -183,6 +188,8 @@ def main() -> int:
                         reloc_events=args.reloc_events,
                         demo_corridor_m=args.demo_corridor,
                         speed_cap_mps=args.speed_cap)
+    if args.noise_era == "10hz":
+        cfg.apply_vision10hz()
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device),
                      obstacles_path=args.obstacles or None)

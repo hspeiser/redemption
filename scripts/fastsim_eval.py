@@ -51,6 +51,8 @@ def main() -> int:
     parser.add_argument("--obstacles", default="")
     parser.add_argument("--no-dr", action="store_true")
     parser.add_argument("--max-steps", type=int, default=1600)
+    parser.add_argument("--noise-era", choices=["3hz", "10hz"],
+                        default="3hz")
     args = parser.parse_args()
     device = torch.device(args.device)
 
@@ -62,6 +64,8 @@ def main() -> int:
         demo_corridor_m=args.demo_corridor,
         speed_cap_mps=args.speed_cap,
     )
+    if args.noise_era == "10hz":
+        cfg.apply_vision10hz()
     if args.no_noise:
         cfg.pos_noise_lo = cfg.pos_noise_hi = 0.0
     if args.no_dr:

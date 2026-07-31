@@ -77,6 +77,10 @@ class FastEnvConfig:
     # ~3 s between gates); the policy must fly through them on momentum
     reloc_drift_s: tuple = (0.4, 3.0)
     reloc_mag_m: tuple = (0.4, 1.6)
+    # continuous speed-proportional coast drift coefficients (diffuse,
+    # directional-bias); 3 Hz-era defaults preserved for reproducibility
+    coast_speed_diffuse: float = 0.004
+    coast_speed_bias: float = 0.010
     # live-guard parity (VQ2LiveEnv terminals mirrored)
     max_tilt_deg: float = 80.0
     live_gate_timeout_s: float = 4.5
@@ -93,6 +97,25 @@ class FastEnvConfig:
     start_noise_pos_m: float = 0.4
     start_noise_vel_mps: float = 0.8
     speed_cap_mps: float = 16.0
+
+    def apply_vision10hz(self) -> "FastEnvConfig":
+        """Retune estimator noise to the GPU-10Hz vision era.
+
+        Measured on v77 (vision_hz 10, cuda; 49 episodes, 12.4k steps):
+        sigma p50/p90/p99 = 0.09/0.16/0.43 m; landmark age p50/p90/p99 =
+        0.14/0.36/1.07 s; belief snaps p50/p90/max = 0.12/0.25/1.19 m;
+        coast spells p50/p90/p99 = 0.19/0.24/0.89 s.  The 3 Hz-era
+        defaults model 4x longer droughts and 4x larger snaps than the
+        current stack produces.
+        """
+        self.pos_noise_lo = 0.03
+        self.pos_noise_hi = 0.16
+        self.reloc_interval_s = (6.0, 14.0)
+        self.reloc_drift_s = (0.15, 0.9)
+        self.reloc_mag_m = (0.10, 0.5)
+        self.coast_speed_diffuse = 0.002
+        self.coast_speed_bias = 0.004
+        return self
 
 
 class FastVQ2Env:
@@ -507,9 +530,9 @@ class FastVQ2Env:
             # proportional to speed, PLUS the discrete reloc events.
             spd_now = torch.linalg.norm(self.v, dim=-1)
             self.noise_pos = self.noise_pos + (
-                0.004 * spd_now[:, None] * step_dt
+                cfg.coast_speed_diffuse * spd_now[:, None] * step_dt
                 * torch.randn(n, 3, device=dev)
-                + 0.010 * spd_now[:, None] * step_dt
+                + cfg.coast_speed_bias * spd_now[:, None] * step_dt
                 * torch.nn.functional.normalize(
                     self.noise_pos + 1e-6 * torch.randn(
                         n, 3, device=dev
