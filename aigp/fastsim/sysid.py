@@ -187,6 +187,9 @@ def rollout(
             R = q.as_matrix()
         v_body = R.T @ v
         f_body = D * v_body
+        if getattr(model, "drag_quad", None):
+            f_body = f_body - np.asarray(model.drag_quad) \
+                * np.linalg.norm(v) * v_body
         f_body[2] += -(model.thrust_gain * u[3]
                        + model.thrust_quad * u[3] ** 2)
         a = g + R @ f_body
