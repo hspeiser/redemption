@@ -217,6 +217,7 @@ def main() -> int:
                 "finished": bool(step_info.get("finished")),
                 "failure": step_info.get("failure"),
                 "sim_time_s": step_info.get("sim_time_s"),
+                "update_counts": dict(localizer.update_counts),
             }
             results.append(row)
             print("EP", json.dumps(row))
