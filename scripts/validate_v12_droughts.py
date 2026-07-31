@@ -83,15 +83,22 @@ def main() -> int:
         peaks = _dense_corner_peaks(image, net, refiner, device, 0.35, 3.0)
         px = np.array([e["pixel"] for e in exp])
         span = float(np.ptp(px, axis=0).max())
-        radius = max(6.0, 0.08 * span)
+        # drought frames often failed BECAUSE the projection is biased
+        # (map error, belief drift); judge detection against a loose
+        # region, not the biased prediction
+        radius = max(20.0, 0.25 * span)
+        # class-agnostic: peaks carry APPARENT corner classes (flipped
+        # at most gates vs the world-indexed expected list)
+        all_peaks = np.array([
+            (u, v) for c in range(8) for (u, v, _s) in peaks[c]
+        ]) if any(len(p) for p in peaks) else np.zeros((0, 2))
         hits = 0
         for e in exp:
-            c = e["corner"]
             target = np.array(e["pixel"])
-            for (u, v, _s) in peaks[c]:
-                if np.hypot(u - target[0], v - target[1]) <= radius:
-                    hits += 1
-                    break
+            if len(all_peaks) and np.min(np.linalg.norm(
+                all_peaks - target, axis=1
+            )) <= radius:
+                hits += 1
         return hits >= 4
 
     wins = {"v7": 0, "v12": 0}

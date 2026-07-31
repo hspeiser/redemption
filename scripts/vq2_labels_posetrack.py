@@ -67,6 +67,10 @@ def main() -> int:
     parser.add_argument("--threshold", type=float, default=0.35)
     parser.add_argument("--stride", type=int, default=1,
                         help="use every Nth pose frame")
+    parser.add_argument("--pure-projection", action="store_true",
+                        help="accept high-quality-pose frames with few/no "
+                             "snapped corners (drought/occlusion views the "
+                             "snap requirement systematically excludes)")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
@@ -111,6 +115,8 @@ def main() -> int:
             continue
         n_rows = len(track["path"])
         for row in range(0, n_rows, args.stride):
+            if stats["frames"] % 250 == 0:
+                print(f"progress: {stats}", flush=True)
             stats["frames"] += 1
             sigma = float(track["sigma"][row])
             gyro = float(track["gyro_norm"][row])
@@ -178,6 +184,13 @@ def main() -> int:
                 is_close = span > 140
                 if n_snap >= 3 or (is_close and n_snap >= 2) or (
                     is_close and high_quality
+                ) or (
+                    # drought supervision: the detector found little or
+                    # nothing here (occlusion, interference) -- exactly
+                    # the views the snap requirement excludes; a good
+                    # belief pose (~8px) is sufficient for recall labels
+                    args.pure_projection and high_quality
+                    and vis_class.sum() >= 6
                 ):
                     gates_f.append((snapped, vis_class, n_snap, is_close))
                     stats["snapped"] += n_snap
