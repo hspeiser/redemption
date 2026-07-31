@@ -117,6 +117,8 @@ class FastEnvConfig:
     # deterministically crashed in the first 1.8s live (obs-divergence
     # diagnosis, t=0 vbody mismatch)
     spawn_at_rest: bool = False
+    # residual authority when a backbone is attached
+    residual_scale: float = 0.25
     start_noise_vel_mps: float = 0.8
     speed_cap_mps: float = 16.0
 
@@ -149,7 +151,11 @@ class FastVQ2Env:
         config: FastEnvConfig | None = None,
         device: str = "cuda",
         obstacles_path: str | Path | None = None,
+        backbone=None,
     ) -> None:
+        # residual mode: when a RefController backbone is attached, the
+        # incoming action is a RESIDUAL added to the backbone's action
+        self.backbone = backbone
         self.cfg = config or FastEnvConfig()
         self.device = torch.device(device)
         self.model = model
@@ -385,6 +391,12 @@ class FastVQ2Env:
             cfg.act_delay_steps_min, cfg.act_delay_steps_max + 1,
             (n,), device=dev,
         )
+        if self.backbone is not None:
+            d = torch.linalg.norm(
+                self.backbone.P[None, :, :] - p[:, None, :], dim=-1
+            )
+            self.backbone.idx[idx] = d.argmin(dim=1)
+            self.backbone.steps[idx] = self.backbone.idx[idx].clone()
         self.noise_pos[idx] = 0.0
         self.vis_age[idx] = 0.0
         self.noise_amp[idx] = (
@@ -490,6 +502,13 @@ class FastVQ2Env:
         dev = self.device
         n = cfg.n_envs
         m = self.model
+        if self.backbone is not None:
+            base = self.backbone.action(
+                self.p + self.noise_pos, self.v, self._qmat(self.q)
+            )
+            action = base + cfg.residual_scale * torch.clamp(
+                action, -1.0, 1.0
+            )
         action = torch.clamp(action, -1.0, 1.0)
         # action transport delay
         self.act_buf = torch.roll(self.act_buf, 1, dims=0)

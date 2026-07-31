@@ -178,6 +178,12 @@ def main() -> int:
     parser.add_argument("--spawn-at-rest", action="store_true",
                         help="spawn starts at rest on the pitched pad "
                              "(matches live episode start)")
+    parser.add_argument("--residual", action="store_true",
+                        help="policy is a bounded residual on the "
+                             "reference-line backbone (RefController); "
+                             "backbone built from --demo-npz positions "
+                             "+ --bc-init actions")
+    parser.add_argument("--residual-scale", type=float, default=0.25)
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--obstacles", default="")
@@ -217,9 +223,19 @@ def main() -> int:
         cfg.act_delay_steps_min = args.act_delay_min
     if args.spawn_at_rest:
         cfg.spawn_at_rest = True
+    backbone = None
+    if args.residual:
+        from aigp.fastsim.refctl import load_winner_backbone
+        cfg.residual_scale = args.residual_scale
+        backbone = load_winner_backbone(
+            args.demo_npz, args.bc_init, cfg.n_envs, device=str(device)
+        )
+        print(f"residual mode: backbone over {backbone.n_pts} ref rows, "
+              f"scale {cfg.residual_scale}")
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device),
-                     obstacles_path=args.obstacles or None)
+                     obstacles_path=args.obstacles or None,
+                     backbone=backbone)
 
     actor = GaussianActor(OBS_DIM, ACT_DIM).to(device)
     critic = mlp(OBS_DIM, (512, 512, 256), 1).to(device)
@@ -252,7 +268,8 @@ def main() -> int:
             (o - obs_mean) / torch.sqrt(obs_var + 1e-6), -8.0, 8.0
         )
 
-    if args.bc_init and not args.resume and start_iter == 0:
+    if args.bc_init and not args.resume and start_iter == 0 \
+            and not args.residual:
         bc = np.load(args.bc_init)
         bc_obs = torch.tensor(bc["observation"], dtype=torch.float32,
                               device=device)
@@ -279,7 +296,7 @@ def main() -> int:
     # corridor and exploit surrogate quirks; keep a standing BC pull
     # toward the completed demonstration during every update.
     anchor_obs = anchor_raw = None
-    if args.bc_anchor > 0 and args.bc_init:
+    if args.bc_anchor > 0 and args.bc_init and not args.residual:
         bc = np.load(args.bc_init)
         anchor_obs = torch.tensor(bc["observation"], dtype=torch.float32,
                                   device=device)
