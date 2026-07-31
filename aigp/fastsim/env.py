@@ -111,6 +111,12 @@ class FastEnvConfig:
     thrust_wire_cap: float = 0.52      # live stack caps wire thrust
     random_start_frac: float = 0.6
     start_noise_pos_m: float = 0.4
+    # live episodes begin AT REST on the pitched pad; the legacy
+    # "just-lifted" spawn (v ~ 2 m/s climb) left the at-rest state
+    # out-of-distribution -- the sharper corrected-math policies
+    # deterministically crashed in the first 1.8s live (obs-divergence
+    # diagnosis, t=0 vbody mismatch)
+    spawn_at_rest: bool = False
     start_noise_vel_mps: float = 0.8
     speed_cap_mps: float = 16.0
 
@@ -330,7 +336,15 @@ class FastVQ2Env:
             and torch.rand(n, device=dev) < cfg.random_start_frac
         )
         # default "spawn" start: just-lifted post-launch-assist state
-        if self.demo is not None:
+        if cfg.spawn_at_rest:
+            p = torch.tensor([0.0, 0.0, -0.05], device=dev).repeat(n, 1) \
+                + torch.randn(n, 3, device=dev) * 0.02
+            v = torch.zeros(n, 3, device=dev)
+            pitch = torch.tensor(-17.8 * np.pi / 360.0, device=dev)
+            q = torch.zeros(n, 4, device=dev)
+            q[:, 0] = torch.cos(pitch)
+            q[:, 2] = torch.sin(pitch)
+        elif self.demo is not None:
             p = self.launch_state["pos"].repeat(n, 1) \
                 + torch.randn(n, 3, device=dev) * 0.3
             v = self.launch_state["vel"].repeat(n, 1) \

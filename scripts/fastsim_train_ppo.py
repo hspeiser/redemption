@@ -175,6 +175,9 @@ def main() -> int:
     parser.add_argument("--bc-anchor", type=float, default=0.0,
                         help="standing BC pull toward the demo during "
                              "PPO updates (0.03-0.10 typical)")
+    parser.add_argument("--spawn-at-rest", action="store_true",
+                        help="spawn starts at rest on the pitched pad "
+                             "(matches live episode start)")
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--obstacles", default="")
@@ -212,6 +215,8 @@ def main() -> int:
         cfg.action_smoothness = args.action_smoothness
     if args.act_delay_min is not None:
         cfg.act_delay_steps_min = args.act_delay_min
+    if args.spawn_at_rest:
+        cfg.spawn_at_rest = True
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device),
                      obstacles_path=args.obstacles or None)
