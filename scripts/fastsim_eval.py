@@ -56,6 +56,7 @@ def main() -> int:
     parser.add_argument("--fov-vision", action="store_true")
     parser.add_argument("--action-smoothness", type=float, default=None)
     parser.add_argument("--act-delay-min", type=int, default=None)
+    parser.add_argument("--spawn-at-rest", action="store_true")
     args = parser.parse_args()
     device = torch.device(args.device)
 
@@ -77,6 +78,8 @@ def main() -> int:
         cfg.action_smoothness = args.action_smoothness
     if args.act_delay_min is not None:
         cfg.act_delay_steps_min = args.act_delay_min
+    if args.spawn_at_rest:
+        cfg.spawn_at_rest = True
     if args.no_noise:
         cfg.pos_noise_lo = cfg.pos_noise_hi = 0.0
     if args.no_dr:
