@@ -105,6 +105,15 @@ def main() -> int:
     # OFF for policy flights; flag retained for experiments.
     parser.add_argument("--direct-position-pins", default=False,
                         action=argparse.BooleanOptionalAction)
+    # hybrid mode: policy output is a bounded residual on the
+    # reference-line backbone (same combination as residual training)
+    parser.add_argument("--residual", action="store_true")
+    parser.add_argument("--residual-scale", type=float, default=0.3)
+    parser.add_argument("--backbone-demo", type=Path,
+                        default=REPO / "data/fastsim_demo_winner.npz")
+    parser.add_argument("--backbone-episode", type=Path,
+                        default=REPO / "data/vq2_sac_runs/gate3_nstep_"
+                        "v60b/20260730_161745/episode_0002.npz")
     parser.add_argument("--cpu-affinity", default="0xC000")
     parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument(
@@ -170,6 +179,31 @@ def main() -> int:
         mavlink, localizer, VQ2EnvConfig(speed_cap_mps=16.0)
     )
 
+    backbone = None
+    if args.residual:
+        from scipy.spatial.transform import Rotation
+
+        from aigp.fastsim.refctl import load_winner_backbone
+        backbone = load_winner_backbone(
+            str(args.backbone_demo), str(args.backbone_episode),
+            n_envs=1, device="cpu",
+        )
+        print(f"residual mode: backbone {backbone.n_pts} rows, "
+              f"scale {args.residual_scale}")
+
+        def combined_act(obs):
+            st = localizer.state()
+            qw, qx, qy, qz = st.quat_wxyz
+            R = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
+            base = backbone.action(
+                torch.tensor(st.position, dtype=torch.float32)[None],
+                torch.tensor(st.velocity, dtype=torch.float32)[None],
+                torch.tensor(R, dtype=torch.float32)[None],
+            )[0].numpy()
+            return np.clip(
+                base + args.residual_scale * act(obs), -1.0, 1.0
+            )
+
     def reset_with_retry(max_attempts: int = 6):
         # Anchor diagnostics are noisy right at spawn (GPU contention with
         # the sim, transient translation spread).  The SAC trainer survives
@@ -207,10 +241,15 @@ def main() -> int:
             frame_dir = os.environ.get("AIGP_SAVE_DEBUG_FRAMES")
             last_frame_save = 0.0
             obs_log = [] if os.environ.get("AIGP_SAVE_OBS") else None
+            if backbone is not None:
+                backbone.reset(torch.tensor([0]))
             while not done:
                 if obs_log is not None:
                     obs_log.append(np.asarray(observation, np.float32))
-                action = act(observation)
+                action = (
+                    combined_act(observation) if backbone is not None
+                    else act(observation)
+                )
                 observation, reward, term, trunc, step_info = \
                     environment.step(action)
                 ep_reward += float(reward)
