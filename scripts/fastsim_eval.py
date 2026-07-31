@@ -57,6 +57,12 @@ def main() -> int:
     parser.add_argument("--action-smoothness", type=float, default=None)
     parser.add_argument("--act-delay-min", type=int, default=None)
     parser.add_argument("--spawn-at-rest", action="store_true")
+    parser.add_argument("--residual", action="store_true")
+    parser.add_argument("--residual-scale", type=float, default=0.3)
+    parser.add_argument("--bc-init", default=str(
+        REPO / "data/vq2_sac_runs/gate3_nstep_v60b/20260730_161745"
+               "/episode_0002.npz"),
+        help="episode npz for backbone feedforward in residual mode")
     args = parser.parse_args()
     device = torch.device(args.device)
 
@@ -90,9 +96,17 @@ def main() -> int:
         cfg.act_delay_steps_max = 0
     model = SurrogateModel.load(args.model)
     demo = dict(np.load(args.demo_npz)) if args.demo_npz else None
+    backbone = None
+    if args.residual:
+        from aigp.fastsim.refctl import load_winner_backbone
+        cfg.residual_scale = args.residual_scale
+        backbone = load_winner_backbone(
+            args.demo_npz, args.bc_init, cfg.n_envs, device=str(device)
+        )
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device),
-                     obstacles_path=args.obstacles or None)
+                     obstacles_path=args.obstacles or None,
+                     backbone=backbone)
 
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
     actor = GaussianActor(OBS_DIM, ACT_DIM).to(device)
