@@ -95,6 +95,11 @@ def main() -> int:
                         action=argparse.BooleanOptionalAction)
     parser.add_argument("--vision-worker-threads", type=int, default=8)
     parser.add_argument("--vision-worker-affinity", default="0x03FC")
+    # the winning stack's strongest fix type (26% of its updates); the
+    # localizer constructor defaults it OFF and flights 6-11 flew
+    # without it -- silently losing the gate-approach precision pin
+    parser.add_argument("--direct-position-pins", default=True,
+                        action=argparse.BooleanOptionalAction)
     parser.add_argument("--cpu-affinity", default="0xC000")
     parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument(
@@ -152,6 +157,7 @@ def main() -> int:
         dense_process_isolation=args.vision_process_isolation,
         dense_worker_threads=args.vision_worker_threads,
         dense_worker_affinity=args.vision_worker_affinity,
+        direct_position_pins=args.direct_position_pins,
     )
     # match the surrogate's training envelope: the 12 m/s default is the
     # SAC trainer's safety guard, not a sim or competition rule
