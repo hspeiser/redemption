@@ -172,6 +172,9 @@ def main() -> int:
     parser.add_argument("--act-delay-min", type=int, default=None,
                         help="minimum actuation delay steps (measured "
                              "plant lag ~1 step at 30Hz)")
+    parser.add_argument("--bc-anchor", type=float, default=0.0,
+                        help="standing BC pull toward the demo during "
+                             "PPO updates (0.03-0.10 typical)")
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--obstacles", default="")
@@ -267,6 +270,19 @@ def main() -> int:
                 print(f"bc-init step {step}: loss {float(loss):.4f}")
         print(f"bc-init done ({len(bc_obs)} demo pairs)")
 
+    # demo anchor (review find): PPO is free to forget the demonstrated
+    # corridor and exploit surrogate quirks; keep a standing BC pull
+    # toward the completed demonstration during every update.
+    anchor_obs = anchor_raw = None
+    if args.bc_anchor > 0 and args.bc_init:
+        bc = np.load(args.bc_init)
+        anchor_obs = torch.tensor(bc["observation"], dtype=torch.float32,
+                                  device=device)
+        anchor_raw = torch.atanh(torch.clamp(
+            torch.tensor(bc["action"], dtype=torch.float32,
+                         device=device), -0.999, 0.999,
+        ))
+
     @torch.no_grad()
     def policy_sample(o):
         mean, _ = actor.distribution(normalize(o))
@@ -358,6 +374,15 @@ def main() -> int:
                 )
                 entropy = (log_std + 0.5 * np.log(2 * np.pi * np.e)).sum()
                 pi_loss = -surr.mean() - args.entropy * entropy
+                if anchor_obs is not None:
+                    ka = torch.randint(0, len(anchor_obs), (512,),
+                                       device=device)
+                    a_mean, _ = actor.distribution(
+                        normalize(anchor_obs[ka])
+                    )
+                    pi_loss = pi_loss + args.bc_anchor * F.mse_loss(
+                        a_mean, anchor_raw[ka]
+                    )
                 v = critic(no).squeeze(-1)
                 v_loss = F.mse_loss(v, b_ret[mb])
                 optimizer.zero_grad(set_to_none=True)
