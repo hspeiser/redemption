@@ -54,6 +54,8 @@ def main() -> int:
     parser.add_argument("--noise-era", choices=["3hz", "10hz"],
                         default="3hz")
     parser.add_argument("--fov-vision", action="store_true")
+    parser.add_argument("--action-smoothness", type=float, default=None)
+    parser.add_argument("--act-delay-min", type=int, default=None)
     args = parser.parse_args()
     device = torch.device(args.device)
 
@@ -71,6 +73,10 @@ def main() -> int:
         cfg.fov_vision = True
         cfg.coast_speed_diffuse = 0.005
         cfg.coast_speed_bias = 0.015
+    if args.action_smoothness is not None:
+        cfg.action_smoothness = args.action_smoothness
+    if args.act_delay_min is not None:
+        cfg.act_delay_steps_min = args.act_delay_min
     if args.no_noise:
         cfg.pos_noise_lo = cfg.pos_noise_hi = 0.0
     if args.no_dr:
