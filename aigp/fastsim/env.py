@@ -807,6 +807,11 @@ class FastVQ2Env:
         info = {
             "passed": passed,
             "hit": hit,
+            # hole-plane crossing offset (inf-norm, m) for clearance
+            # audits; -1 when the step crossed no gate plane
+            "cross_r": torch.where(
+                crossed, r_inf, torch.full_like(r_inf, -1.0)
+            ),
             "finished": finished,
             "off": off,
             "overspeed": overspeed,
