@@ -166,6 +166,12 @@ def main() -> int:
     parser.add_argument("--fov-vision", action="store_true",
                         help="vision fixes require a lookahead gate in "
                              "the camera frustum (flight-6/7 root cause)")
+    parser.add_argument("--action-smoothness", type=float, default=None,
+                        help="override jerk penalty (violent-flight fix: "
+                             "0.12)")
+    parser.add_argument("--act-delay-min", type=int, default=None,
+                        help="minimum actuation delay steps (measured "
+                             "plant lag ~1 step at 30Hz)")
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--obstacles", default="")
@@ -199,6 +205,10 @@ def main() -> int:
         # mostly-sighted flight; these apply only while coasting)
         cfg.coast_speed_diffuse = 0.005
         cfg.coast_speed_bias = 0.015
+    if args.action_smoothness is not None:
+        cfg.action_smoothness = args.action_smoothness
+    if args.act_delay_min is not None:
+        cfg.act_delay_steps_min = args.act_delay_min
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device),
                      obstacles_path=args.obstacles or None)

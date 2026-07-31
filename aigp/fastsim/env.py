@@ -103,6 +103,10 @@ class FastEnvConfig:
     dr_rate_tau: tuple = (0.7, 1.4)
     dr_drag: tuple = (0.1, 0.6)
     act_delay_steps_max: int = 2
+    # measured plant lag is ~30ms (17ms dead + 13ms tau, lrspeiser
+    # open-loop); a zero-delay draw lets policies learn twitch control
+    # that arrives late in reality (the violent-flight symptom)
+    act_delay_steps_min: int = 0
     rate_gain_sign: float = 1.0        # pinned by attitude check
     thrust_wire_cap: float = 0.52      # live stack caps wire thrust
     random_start_frac: float = 0.6
@@ -364,7 +368,8 @@ class FastVQ2Env:
         self.prev_action[idx] = 0.0
         self.act_buf[:, idx] = 0.0
         self.act_delay[idx] = torch.randint(
-            0, cfg.act_delay_steps_max + 1, (n,), device=dev
+            cfg.act_delay_steps_min, cfg.act_delay_steps_max + 1,
+            (n,), device=dev,
         )
         self.noise_pos[idx] = 0.0
         self.vis_age[idx] = 0.0
