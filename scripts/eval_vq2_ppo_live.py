@@ -206,7 +206,10 @@ def main() -> int:
             step_log = []
             frame_dir = os.environ.get("AIGP_SAVE_DEBUG_FRAMES")
             last_frame_save = 0.0
+            obs_log = [] if os.environ.get("AIGP_SAVE_OBS") else None
             while not done:
+                if obs_log is not None:
+                    obs_log.append(np.asarray(observation, np.float32))
                 action = act(observation)
                 observation, reward, term, trunc, step_info = \
                     environment.step(action)
@@ -243,6 +246,11 @@ def main() -> int:
                 })
             with open(str(args.log) + f".ep{ep_i}.steps.json", "w") as fh:
                 json.dump(step_log, fh)
+            if obs_log is not None:
+                np.savez_compressed(
+                    str(args.log) + f".ep{ep_i}.obs.npz",
+                    observation=np.asarray(obs_log, np.float32),
+                )
             row = {
                 "episode": ep_i,
                 "reward": round(ep_reward, 1),
