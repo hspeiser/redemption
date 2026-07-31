@@ -200,6 +200,12 @@ def main() -> int:
                     "spd": round(float(step_info["speed"]), 2),
                     "sig": round(float(step_info["position_sigma_m"]), 3),
                     "va": round(float(step_info["visual_age_s"]), 2),
+                    # lag forensics: separate policy blindness (va grows
+                    # while ca stays fresh) from pipeline lag (ca/ia/ss
+                    # grow) -- flight-7 confound
+                    "ca": round(float(step_info.get("camera_age_s", -1)), 3),
+                    "ia": round(float(step_info.get("imu_age_s", -1)), 3),
+                    "ss": round(float(step_info.get("sim_step_s", -1)), 3),
                 })
             with open(str(args.log) + f".ep{ep_i}.steps.json", "w") as fh:
                 json.dump(step_log, fh)
