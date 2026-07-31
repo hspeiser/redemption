@@ -471,8 +471,35 @@ class LiveVQ2Localizer:
             "net_relocalize": 0,
             "stale_vision_drop": 0,
             "none": 0,
+            "crop_track": 0,
+            "crop_track_none": 0,
+            "crop_track_stale": 0,
         }
         self.async_inference_ms = 0.0
+        # Opt-in 10Hz crop tracker (AIGP_CROP_TRACKER=1): between dense
+        # V7/V10 fixes, place a crop from the EKF's own corner projections
+        # (no YOLO proposal) and fuse CropGateNet corners.  Dense inference
+        # costs ~220ms on CPU and caps vision at ~3Hz; the crop net costs
+        # ~50-70ms, so this holds landmark age near the crop cadence where
+        # the 3Hz dense cadence lets belief coast ~1s on fast approaches.
+        self.crop_track_enabled = (
+            os.environ.get("AIGP_CROP_TRACKER") == "1"
+        )
+        self.crop_track_interval_s = float(
+            os.environ.get("AIGP_CROP_TRACKER_INTERVAL", "0.10")
+        )
+        self.crop_track_min_span_px = 30.0
+        self.crop_track_max_age_s = 1.2
+        self.crop_track_max_result_age_s = 0.35
+        self.crop_track_ms = 0.0
+        self._crop_lock = threading.Lock()
+        self._crop_thread = None
+        self._crop_stop_event = None
+        self._crop_job = None
+        self._crop_result = None
+        self._crop_busy = False
+        self._crop_last_dispatched = None
+        self._crop_last_dispatch_wall = -np.inf
         self._async_lock = threading.Lock()
         self._async_job = None
         self._async_result = None
@@ -770,9 +797,17 @@ class LiveVQ2Localizer:
             "net_relocalize": 0,
             "stale_vision_drop": 0,
             "none": 0,
+            "crop_track": 0,
+            "crop_track_none": 0,
+            "crop_track_stale": 0,
         }
         self.async_inference_ms = 0.0
         self._async_last_dispatched = None
+        with self._crop_lock:
+            self._crop_job = None
+            self._crop_result = None
+        self._crop_last_dispatched = None
+        self._crop_last_dispatch_wall = -np.inf
         self.last_gyro = np.asarray(latest_imu[4:7], float)
         spread = np.linalg.norm(
             translations_selected - np.median(
@@ -1187,6 +1222,124 @@ class LiveVQ2Localizer:
         )
         return True
 
+    def _crop_track_loop(self, stop_event: threading.Event) -> None:
+        while not stop_event.is_set():
+            with self._crop_lock:
+                job = self._crop_job
+                if job is not None:
+                    self._crop_job = None
+                    self._crop_busy = True
+            if job is None:
+                time.sleep(0.002)
+                continue
+            started = time.perf_counter()
+            try:
+                job["obs"] = self._crop_track_infer(job)
+            except Exception:
+                job["obs"] = None
+            job["crop_ms"] = (time.perf_counter() - started) * 1000.0
+            with self._crop_lock:
+                self._crop_result = job
+                self._crop_busy = False
+
+    def _crop_track_infer(
+        self, job: dict
+    ) -> list[tuple[np.ndarray, np.ndarray]] | None:
+        """CropGateNet corners for the active gate, placed from the EKF.
+
+        Unlike _v11_position_pin this needs no YOLO proposal: the snapshot
+        EKF projects the gate's known world corners, and the crop window is
+        placed around that prediction.  Valid exactly when landmark age is
+        small enough that the projection lands near the true gate -- the
+        regime the dispatcher enforces (crop_track_max_age_s).
+        """
+        ekf = job["ekf"]
+        gate_index = int(job["active_gate"])
+        if not 0 <= gate_index < min(17, len(self.gate_world)):
+            return None
+        expected = []
+        for corner in self.gate_world[gate_index]:
+            pixel, _ = ekf.predict_pixel(corner)
+            if pixel is None:
+                return None
+            expected.append(pixel)
+        expected = np.asarray(expected, np.float32)
+        span = float(np.ptp(expected, axis=0).max())
+        if span < self.crop_track_min_span_px:
+            return None
+        inner_expected = expected[:4]
+        center = inner_expected.mean(axis=0)
+        image = self._decode_jpeg(job["frame"])
+        if image is None:
+            return None
+        height, width = image.shape[:2]
+        if not (
+            -0.15 * width <= center[0] <= 1.15 * width
+            and -0.15 * height <= center[1] <= 1.15 * height
+        ):
+            return None
+        side = max(18.0, span * self.crop_padding)
+        crop, _forward, inverse = warp_gate_crop(
+            image, center, side, self.crop_size
+        )
+        orange = crop_orange_channel(crop)
+        network_input = np.concatenate([
+            crop.astype(np.float32) / 255.0,
+            orange[..., None],
+            self.crop_prior[..., None],
+        ], axis=2).transpose(2, 0, 1)
+        tensor = torch.from_numpy(network_input).unsqueeze(0).to(
+            self.device
+        )
+        with torch.no_grad(), torch.autocast(
+            "cuda",
+            dtype=torch.float16,
+            enabled=self.device.type == "cuda",
+        ):
+            output = self.crop(tensor)
+        decoded = decode_crop_corners(
+            output, self.crop_size, inverse_affine=inverse
+        )
+        points = np.asarray(decoded["corners"], np.float32)[:4]
+        accepted = (
+            (np.asarray(decoded["scores"])[:4] >= 0.10)
+            & (np.asarray(decoded["visibility"])[:4] >= 0.25)
+            & (float(decoded["presence"]) >= 0.25)
+        )
+        if accepted.sum() < 3:
+            return None
+        if np.linalg.norm(points.mean(axis=0) - center) > \
+                max(15.0, 0.35 * span):
+            return None
+        # D4 alignment against the EKF projection resolves the crop net's
+        # corner-class ordering and guards against locking a wrong gate.
+        best_error = np.inf
+        best_mapping = None
+        base = np.arange(4)
+        for shift in range(4):
+            for mapping in (
+                np.roll(base, shift),
+                np.roll(base[::-1], shift),
+            ):
+                error = float(np.mean(np.linalg.norm(
+                    points - inner_expected[mapping], axis=1
+                )))
+                if error < best_error:
+                    best_error = error
+                    best_mapping = mapping
+        if best_error > max(12.0, 0.25 * span):
+            return None
+        observations = []
+        for point_index in np.flatnonzero(accepted):
+            world_corner = self.gate_world[gate_index][
+                int(best_mapping[point_index])
+            ]
+            observations.append((
+                np.asarray(world_corner, float),
+                points[point_index].astype(float),
+            ))
+        return observations
+
     def _v11_position_pin(
         self, image: np.ndarray, active_gate: int
     ) -> bool:
@@ -1571,6 +1724,15 @@ class LiveVQ2Localizer:
         self._async_generation += 1
         self._async_last_dispatched = None
         self._async_last_dispatch_wall = -np.inf
+        if self.crop_track_enabled:
+            self._crop_stop_event = threading.Event()
+            self._crop_thread = threading.Thread(
+                target=self._crop_track_loop,
+                args=(self._crop_stop_event,),
+                name="vq2-crop-tracker",
+                daemon=True,
+            )
+            self._crop_thread.start()
         if self.dense_process_isolation:
             self._ensure_dense_process()
             return
@@ -1585,6 +1747,16 @@ class LiveVQ2Localizer:
 
     def stop_async(self) -> None:
         self._async_running = False
+        if self._crop_stop_event is not None:
+            self._crop_stop_event.set()
+        if self._crop_thread is not None:
+            self._crop_thread.join(timeout=3.0)
+        self._crop_thread = None
+        self._crop_stop_event = None
+        with self._crop_lock:
+            self._crop_job = None
+            self._crop_result = None
+            self._crop_busy = False
         if self.dense_process_isolation:
             return
         if self._async_stop_event is not None:
@@ -1720,6 +1892,53 @@ class LiveVQ2Localizer:
         elif not dropped_stale:
             self.last_update_source = "imu_only"
 
+        crop_result = None
+        if self.crop_track_enabled:
+            with self._crop_lock:
+                crop_result = self._crop_result
+                if crop_result is not None:
+                    self._crop_result = None
+        if crop_result is not None and result is None:
+            crop_age_s = (
+                time.time_ns() - int(crop_result["frame_wall_ns"])
+            ) * 1e-9
+            self.crop_track_ms = float(crop_result.get("crop_ms", 0.0))
+            observations = crop_result.get("obs")
+            if (
+                crop_result["dispatch_visual_wall"]
+                < self.last_visual_wall - 1e-6
+            ):
+                # A dense fix landed after this job's snapshot; rebasing to
+                # the snapshot would discard it.  Drop the crop result --
+                # the tracker refires within one interval.
+                self.update_counts["crop_track_stale"] += 1
+            elif (
+                observations
+                and crop_age_s <= self.crop_track_max_result_age_s
+            ):
+                self.ekf = crop_result["ekf"]
+                self.last_imu_us = crop_result["last_imu_us"]
+                self.last_gyro = crop_result["last_gyro"]
+                crop_fused = self.ekf.update_corners(
+                    observations,
+                    chi2_gate=6.0,
+                    update_attitude=False,
+                    sigma_px=2.0,
+                )
+                self._propagate_imu()
+                if crop_fused >= 2:
+                    fused = crop_fused
+                    self.last_visual_wall = (
+                        float(crop_result["frame_wall_ns"]) * 1e-9
+                    )
+                    self.last_frame_id = int(crop_result["frame_id"])
+                    self.last_update_source = "crop_track"
+                    self.update_counts["crop_track"] += 1
+                else:
+                    self.update_counts["crop_track_none"] += 1
+            else:
+                self.update_counts["crop_track_none"] += 1
+
         frame = self.vision.latest
         if self.dense_process_isolation:
             worker_idle = not self._async_busy
@@ -1771,6 +1990,35 @@ class LiveVQ2Localizer:
                         self._async_job = job
                 self._async_last_dispatched = int(frame[0])
                 self._async_last_dispatch_wall = time.monotonic()
+        if self.crop_track_enabled and frame is not None:
+            with self._crop_lock:
+                crop_idle = (
+                    not self._crop_busy
+                    and self._crop_job is None
+                    and self._crop_result is None
+                )
+            if (
+                crop_idle
+                and frame[0] != self._crop_last_dispatched
+                and time.monotonic() - self._crop_last_dispatch_wall
+                >= self.crop_track_interval_s
+                and time.time() - self.last_visual_wall
+                <= self.crop_track_max_age_s
+            ):
+                crop_job = {
+                    "frame": frame,
+                    "frame_id": int(frame[0]),
+                    "frame_wall_ns": int(frame[3]),
+                    "active_gate": int(active_gate),
+                    "ekf": copy.deepcopy(self.ekf),
+                    "last_imu_us": self.last_imu_us,
+                    "last_gyro": self.last_gyro.copy(),
+                    "dispatch_visual_wall": self.last_visual_wall,
+                }
+                with self._crop_lock:
+                    self._crop_job = crop_job
+                self._crop_last_dispatched = int(frame[0])
+                self._crop_last_dispatch_wall = time.monotonic()
         self.last_fused = fused
         return self.state()
 
