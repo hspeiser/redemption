@@ -316,19 +316,6 @@ def main() -> int:
             gate_max = max(gate_max, int(info["target"].max()))
         with torch.no_grad():
             VL[args.horizon] = critic(normalize(obs)).squeeze(-1)
-        # obs normalization update (batched Welford-ish)
-        flatO = O.reshape(-1, OBS_DIM)
-        bmean = flatO.mean(0)
-        bvar = flatO.var(0, unbiased=False)
-        bn = flatO.shape[0]
-        delta = bmean - obs_mean
-        tot = obs_count + bn
-        obs_mean = obs_mean + delta * bn / tot
-        obs_var = (
-            obs_var * (obs_count / tot) + bvar * (bn / tot)
-            + delta ** 2 * obs_count * bn / tot ** 2
-        )
-        obs_count = tot
 
         adv = torch.zeros_like(RW)
         gae = torch.zeros(args.n_envs, device=device)
@@ -377,8 +364,29 @@ def main() -> int:
                 (pi_loss + 0.5 * v_loss).backward()
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
                 optimizer.step()
+                with torch.no_grad():
+                    # unbounded global std previously blew up to
+                    # exp(5.8)~340 (saturated bang-bang exploration)
+                    log_std.clamp_(-4.0, 0.3)
                 pi_losses.append(float(pi_loss))
                 v_losses.append(float(v_loss))
+
+        # obs normalization update (batched Welford-ish) -- AFTER the
+        # PPO epochs: updating between rollout and update made the
+        # old/new log-probs use different normalizations, so the ratio
+        # was not 1 even before the first gradient step (review find)
+        flatO = O.reshape(-1, OBS_DIM)
+        bmean = flatO.mean(0)
+        bvar = flatO.var(0, unbiased=False)
+        bn = flatO.shape[0]
+        delta = bmean - obs_mean
+        tot = obs_count + bn
+        obs_mean = obs_mean + delta * bn / tot
+        obs_var = (
+            obs_var * (obs_count / tot) + bvar * (bn / tot)
+            + delta ** 2 * obs_count * bn / tot ** 2
+        )
+        obs_count = tot
 
         stats["pass"] += pass_ct
         stats["hit"] += hit_ct

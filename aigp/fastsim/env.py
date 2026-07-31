@@ -443,10 +443,22 @@ class FastVQ2Env:
             ))
         v_body = torch.einsum("nij,nj->ni", Rt, self.v)
         one_hot = torch.nn.functional.one_hot(gi, N_GATES).float()
-        sigma = torch.clamp(
-            torch.linalg.norm(self.noise_pos, dim=-1, keepdim=True) / 0.5,
-            0.0, 2.0,
-        )
+        if self.cfg.fov_vision:
+            # live realism (review find): the real policy sees the EKF's
+            # REPORTED covariance, which grows during vision droughts and
+            # resets on a fix -- it never sees the true error.  Model:
+            # baseline sigma + measured coast growth (0.14 m/s) * age.
+            sigma = torch.clamp(
+                (0.09 + 0.14 * self.vis_age.unsqueeze(1)) / 0.5,
+                0.0, 2.0,
+            )
+        else:
+            sigma = torch.clamp(
+                torch.linalg.norm(
+                    self.noise_pos, dim=-1, keepdim=True
+                ) / 0.5,
+                0.0, 2.0,
+            )
         conf = torch.cat([
             sigma, (gi.float() / (N_GATES - 1)).unsqueeze(1)
         ], dim=1)

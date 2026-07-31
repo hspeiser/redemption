@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
+
+import cv2
 from pathlib import Path
 
 import numpy as np
@@ -61,11 +64,11 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--map", type=Path,
-        default=REPO / "data" / "vq2_map_final_live.json",
+        default=REPO / "data" / "vq2_runtime_map_g9g15fix.json",
     )
     parser.add_argument(
         "--primary", type=Path,
-        default=REPO / "data/models/gatenet_v7_best.pt",
+        default=REPO / "data/models/gatenet_v13drought_best.pt",
     )
     parser.add_argument(
         "--refiner", type=Path,
@@ -85,12 +88,12 @@ def main() -> int:
     )
     parser.add_argument("--mav-port", type=int, default=14550)
     parser.add_argument("--camera-port", type=int, default=5600)
-    # isolation config per v29+, but vision at 5 Hz: during eval flights
-    # no learner shares the CPU, and faster cadence shrinks the
-    # inter-gate landmark droughts that killed round-2 episodes
-    parser.add_argument("--vision-hz", type=float, default=5.0)
-    parser.add_argument("--vision-device", default="cpu")
-    parser.add_argument("--max-vision-result-age", type=float, default=1.0)
+    # defaults = the current proven live stack (GPU dense at 10 Hz,
+    # tight staleness), not the legacy CPU-era configuration
+    parser.add_argument("--vision-hz", type=float, default=10.0)
+    parser.add_argument("--vision-device", default="cuda")
+    parser.add_argument("--max-vision-result-age", type=float,
+                        default=0.30)
     parser.add_argument("--vision-process-isolation", default=True,
                         action=argparse.BooleanOptionalAction)
     parser.add_argument("--vision-worker-threads", type=int, default=8)
@@ -201,6 +204,8 @@ def main() -> int:
             ep_reward = 0.0
             step_info = {}
             step_log = []
+            frame_dir = os.environ.get("AIGP_SAVE_DEBUG_FRAMES")
+            last_frame_save = 0.0
             while not done:
                 action = act(observation)
                 observation, reward, term, trunc, step_info = \
@@ -208,6 +213,19 @@ def main() -> int:
                 ep_reward += float(reward)
                 steps += 1
                 done = term or trunc
+                if frame_dir and time.time() - last_frame_save > 0.1:
+                    with localizer._debug_lock:
+                        image = (
+                            None if localizer._debug_image is None
+                            else localizer._debug_image.copy()
+                        )
+                    if image is not None:
+                        os.makedirs(frame_dir, exist_ok=True)
+                        cv2.imwrite(
+                            f"{frame_dir}/ep{ep_i}_s{steps:04d}_"
+                            f"g{step_info['target']}.jpg", image,
+                        )
+                        last_frame_save = time.time()
                 step_log.append({
                     "p": [round(v, 3) for v in step_info["position"]],
                     "tgt": int(step_info["target"]),
@@ -220,6 +238,8 @@ def main() -> int:
                     "ca": round(float(step_info.get("camera_age_s", -1)), 3),
                     "ia": round(float(step_info.get("imu_age_s", -1)), 3),
                     "ss": round(float(step_info.get("sim_step_s", -1)), 3),
+                    "a": [round(float(v), 3) for v in action],
+                    "tilt": round(float(step_info.get("tilt_deg", -1)), 1),
                 })
             with open(str(args.log) + f".ep{ep_i}.steps.json", "w") as fh:
                 json.dump(step_log, fh)

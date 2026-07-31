@@ -26,6 +26,17 @@ def main() -> int:
     )
     args = parser.parse_args()
     ck = torch.load(args.ckpt, map_location="cpu", weights_only=False)
+    config = ck.get("config", {})
+
+    def file_hash(path):
+        import hashlib
+        try:
+            return hashlib.sha256(
+                Path(path).read_bytes()
+            ).hexdigest()[:16]
+        except (OSError, TypeError):
+            return None
+
     artifact = {
         "actor": ck["actor"],
         "obs_mean": ck["obs_mean"].cpu(),
@@ -33,8 +44,24 @@ def main() -> int:
         "obs_dim": 53,
         "act_dim": 4,
         "source_iter": ck.get("iter"),
+        "source_ckpt": str(args.ckpt),
         "exported_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "trained_on": "fastsim surrogate (vq2_map_final, DR+noise)",
+        # full provenance: the exact training configuration, plus
+        # content hashes of the world files it trained against
+        "train_config": config,
+        "input_hashes": {
+            key: file_hash(config.get(key))
+            for key in ("map", "model", "demo_npz", "obstacles")
+            if config.get(key)
+        },
+        "trained_on": (
+            f"fastsim map={Path(str(config.get('map', '?'))).name} "
+            f"model={Path(str(config.get('model', '?'))).name} "
+            f"speed_cap={config.get('speed_cap')} "
+            f"fov={config.get('fov_vision')} "
+            f"noise_era={config.get('noise_era')} "
+            f"corridor={config.get('demo_corridor')}"
+        ),
     }
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
