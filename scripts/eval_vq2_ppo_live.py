@@ -95,10 +95,12 @@ def main() -> int:
                         action=argparse.BooleanOptionalAction)
     parser.add_argument("--vision-worker-threads", type=int, default=8)
     parser.add_argument("--vision-worker-affinity", default="0x03FC")
-    # the winning stack's strongest fix type (26% of its updates); the
-    # localizer constructor defaults it OFF and flights 6-11 flew
-    # without it -- silently losing the gate-approach precision pin
-    parser.add_argument("--direct-position-pins", default=True,
+    # A/B settled (flights 9 vs 12): the direct pin's ~1m belief jumps
+    # destabilize an end-to-end policy (gates [1,1,7,4,2] without pins,
+    # [1,1,0,0,0,0,0,0] with). Pins suit the reference-following SAC
+    # controller, not policies that map obs->action directly. Default
+    # OFF for policy flights; flag retained for experiments.
+    parser.add_argument("--direct-position-pins", default=False,
                         action=argparse.BooleanOptionalAction)
     parser.add_argument("--cpu-affinity", default="0xC000")
     parser.add_argument("--torch-threads", type=int, default=2)
