@@ -81,6 +81,18 @@ class FastEnvConfig:
     # directional-bias); 3 Hz-era defaults preserved for reproducibility
     coast_speed_diffuse: float = 0.004
     coast_speed_bias: float = 0.010
+    # FOV-coupled vision (flight-6/7 root cause): fixes only land when a
+    # lookahead gate sits inside the tilted camera frustum, so a policy
+    # that sprints pitched-forward blinds itself and feels the drift.
+    # Off by default for legacy-config reproducibility.
+    fov_vision: bool = False
+    fov_cam_pitch_deg: float = 20.0
+    fov_half_h_deg: float = 43.0       # 90/58.7 deg frustum minus margin
+    fov_half_v_deg: float = 27.0
+    fov_max_range_m: float = 45.0
+    fov_fix_rate_hz: float = 10.0
+    fov_detect_prob: float = 0.85
+    fov_coast_after_s: float = 0.25
     # live-guard parity (VQ2LiveEnv terminals mirrored)
     max_tilt_deg: float = 80.0
     live_gate_timeout_s: float = 4.5
@@ -257,6 +269,7 @@ class FastVQ2Env:
                                      device=self.device)
         self.noise_pos = z(n, 3)
         self.noise_amp = z(n, 1)
+        self.vis_age = z(n)
         self.reloc_next_t = z(n)
         self.reloc_end_t = z(n)
         self.reloc_dir = z(n, 3)
@@ -354,6 +367,7 @@ class FastVQ2Env:
             0, cfg.act_delay_steps_max + 1, (n,), device=dev
         )
         self.noise_pos[idx] = 0.0
+        self.vis_age[idx] = 0.0
         self.noise_amp[idx] = (
             cfg.pos_noise_lo
             + (cfg.pos_noise_hi - cfg.pos_noise_lo)
@@ -529,14 +543,49 @@ class FastVQ2Env:
             + np.sqrt(1 - rho * rho) * self.noise_amp
             * torch.randn(n, 3, device=dev)
         )
-        if cfg.reloc_events:
-            # MEASURED live behavior (flight round 4 forensics): the
-            # filter coasts ~0.5-1.5s on IMU during FAST gate approaches
-            # (2 Hz vision cannot refix in time), drifting ~0.05 m per
-            # m/s of speed per second. Model: continuous coast drift
-            # proportional to speed, PLUS the discrete reloc events.
+        if cfg.fov_vision:
+            # Vision requires the gate in the camera frustum.  Flight 6/7
+            # both died to policies that sprint pitched-forward: the real
+            # detector then sees floor, the belief coasts, and the drone
+            # arrives at the gate half a metre wrong.  Model fixes as
+            # available only when a lookahead gate projects into the
+            # tilted camera FOV; drift accumulates while blind; a fix
+            # snaps the error back to the OU baseline.  The sigma obs
+            # channel tracks |noise_pos|, so the policy can feel
+            # blindness and learn to fly camera-first.
+            Rt_fov = self._qmat(self.q).transpose(1, 2)
+            cos_p = float(np.cos(np.deg2rad(cfg.fov_cam_pitch_deg)))
+            sin_p = float(np.sin(np.deg2rad(cfg.fov_cam_pitch_deg)))
+            cam_f = torch.tensor([cos_p, 0.0, -sin_p], device=dev)
+            cam_r = torch.tensor([0.0, 1.0, 0.0], device=dev)
+            cam_d = torch.tensor([sin_p, 0.0, cos_p], device=dev)
+            tan_h = float(np.tan(np.deg2rad(cfg.fov_half_h_deg)))
+            tan_v = float(np.tan(np.deg2rad(cfg.fov_half_v_deg)))
+            visible = torch.zeros(n, dtype=torch.bool, device=dev)
+            gi_now = torch.clamp(self.target, max=N_GATES - 1)
+            for lookahead in range(2):
+                gk = torch.clamp(gi_now + lookahead, max=N_GATES - 1)
+                world = self.gate_pos[gk] - self.p
+                rng = torch.linalg.norm(world, dim=-1)
+                body = torch.einsum("nij,nj->ni", Rt_fov, world)
+                zc = body @ cam_f
+                xc = body @ cam_r
+                yc = body @ cam_d
+                in_fov = (
+                    (zc > 0.3)
+                    & (xc.abs() <= tan_h * zc)
+                    & (yc.abs() <= tan_v * zc)
+                    & (rng < cfg.fov_max_range_m)
+                )
+                visible = visible | in_fov
+            self.vis_age = self.vis_age + step_dt
+            due = self.vis_age >= 1.0 / cfg.fov_fix_rate_hz
+            got_fix = visible & due & (
+                torch.rand(n, device=dev) < cfg.fov_detect_prob
+            )
+            coasting = self.vis_age > cfg.fov_coast_after_s
             spd_now = torch.linalg.norm(self.v, dim=-1)
-            self.noise_pos = self.noise_pos + (
+            self.noise_pos = self.noise_pos + coasting.float()[:, None] * (
                 cfg.coast_speed_diffuse * spd_now[:, None] * step_dt
                 * torch.randn(n, 3, device=dev)
                 + cfg.coast_speed_bias * spd_now[:, None] * step_dt
@@ -546,6 +595,32 @@ class FastVQ2Env:
                     ), dim=-1,
                 )
             )
+            if got_fix.any():
+                k = int(got_fix.sum())
+                self.noise_pos[got_fix] = (
+                    self.noise_amp[got_fix]
+                    * torch.randn(k, 3, device=dev)
+                )
+                self.vis_age[got_fix] = 0.0
+        if cfg.reloc_events:
+            # MEASURED live behavior (flight round 4 forensics): the
+            # filter coasts ~0.5-1.5s on IMU during FAST gate approaches
+            # (2 Hz vision cannot refix in time), drifting ~0.05 m per
+            # m/s of speed per second. Model: continuous coast drift
+            # proportional to speed, PLUS the discrete reloc events.
+            # (When fov_vision is on, the FOV block owns coast drift.)
+            spd_now = torch.linalg.norm(self.v, dim=-1)
+            if not cfg.fov_vision:
+                self.noise_pos = self.noise_pos + (
+                    cfg.coast_speed_diffuse * spd_now[:, None] * step_dt
+                    * torch.randn(n, 3, device=dev)
+                    + cfg.coast_speed_bias * spd_now[:, None] * step_dt
+                    * torch.nn.functional.normalize(
+                        self.noise_pos + 1e-6 * torch.randn(
+                            n, 3, device=dev
+                        ), dim=-1,
+                    )
+                )
             start = self.t_ep >= self.reloc_next_t
             if start.any():
                 k = int(start.sum())

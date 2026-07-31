@@ -163,6 +163,9 @@ def main() -> int:
                         help="estimator-noise calibration: 3hz = legacy "
                              "CPU-vision era, 10hz = GPU vision (v77 "
                              "measured)")
+    parser.add_argument("--fov-vision", action="store_true",
+                        help="vision fixes require a lookahead gate in "
+                             "the camera frustum (flight-6/7 root cause)")
     parser.add_argument("--demo-corridor", type=float, default=2.0)
     parser.add_argument("--speed-cap", type=float, default=16.0)
     parser.add_argument("--obstacles", default="")
@@ -190,6 +193,12 @@ def main() -> int:
                         speed_cap_mps=args.speed_cap)
     if args.noise_era == "10hz":
         cfg.apply_vision10hz()
+    if args.fov_vision:
+        cfg.fov_vision = True
+        # true blind-drift rate (the era presets are time-averaged over
+        # mostly-sighted flight; these apply only while coasting)
+        cfg.coast_speed_diffuse = 0.005
+        cfg.coast_speed_bias = 0.015
     env = FastVQ2Env(model, args.map, demo_states=demo, config=cfg,
                      device=str(device),
                      obstacles_path=args.obstacles or None)

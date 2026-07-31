@@ -53,6 +53,7 @@ def main() -> int:
     parser.add_argument("--max-steps", type=int, default=1600)
     parser.add_argument("--noise-era", choices=["3hz", "10hz"],
                         default="3hz")
+    parser.add_argument("--fov-vision", action="store_true")
     args = parser.parse_args()
     device = torch.device(args.device)
 
@@ -66,6 +67,10 @@ def main() -> int:
     )
     if args.noise_era == "10hz":
         cfg.apply_vision10hz()
+    if args.fov_vision:
+        cfg.fov_vision = True
+        cfg.coast_speed_diffuse = 0.005
+        cfg.coast_speed_bias = 0.015
     if args.no_noise:
         cfg.pos_noise_lo = cfg.pos_noise_hi = 0.0
     if args.no_dr:
