@@ -190,6 +190,12 @@ def main() -> int:
     try:
         for ep_i in range(args.episodes):
             observation, info = reset_with_retry()
+            print("ANCHOR", json.dumps({
+                k: v for k, v in localizer.anchor_diagnostics.items()
+                if k in ("map_yaw_delta_deg", "gate0_visual_error_m",
+                         "translation_spread_p90_m", "pitch_deg",
+                         "gate0_visual", "frames")
+            }, default=str), flush=True)
             done = False
             steps = 0
             ep_reward = 0.0
