@@ -477,6 +477,10 @@ class FastVQ2Env:
             * self.dr_thrust[:, 0]
         )
         g_vec = torch.tensor([0.0, 0.0, 9.81], device=dev)
+        drag_quad = torch.tensor(
+            m.drag_quad if getattr(m, "drag_quad", None) else [0.0, 0.0, 0.0],
+            device=dev,
+        )
         dt = 1.0 / (cfg.control_hz * cfg.substeps)
         p_prev = self.p.clone()
         prev_plane = self._gate_local(self.p)
@@ -491,6 +495,9 @@ class FastVQ2Env:
             R = self._qmat(self.q)
             v_body = torch.einsum("nij,nj->ni", R.transpose(1, 2), self.v)
             f_body = -self.dr_drag * v_body
+            f_body = f_body - drag_quad * torch.linalg.norm(
+                self.v, dim=-1, keepdim=True
+            ) * v_body
             f_body[:, 2] = f_body[:, 2] - thrust_acc
             a = g_vec + torch.einsum("nij,nj->ni", R, f_body)
             self.v = self.v + a * dt

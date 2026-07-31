@@ -34,6 +34,10 @@ class SurrogateModel:
     drag_lin: list[float]        # per-axis body linear drag [1/s]
     g_vec: list[float]           # world gravity vector (frame-empirical)
     hz: float
+    # quadratic body drag [1/m]: f_body -= c * |v| * v_body.  Fitted
+    # jointly with the thrust-curve correction on v77/v79 full-record
+    # data (151k samples, 2-12 m/s); zero for legacy models.
+    drag_quad: list[float] | None = None
 
     def save(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(asdict(self), indent=1))
