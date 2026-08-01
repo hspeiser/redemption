@@ -223,17 +223,24 @@ def build_reference(
     T = np.maximum(T, 3.0)
     z_b = -tvec / T[:, None]
 
-    # yaw: smoothed horizontal course heading (the gate lead-in points
-    # already align the path with each gate normal, so tangent yaw keeps
-    # the active gate inside the camera frustum without the step
-    # discontinuity of a look-at-target scheme)
+    # yaw: look AT the active gate's crossing point (camera-first — live
+    # flight 33 ep0 coasted to sigma 0.48 m on the g3 approach because
+    # tangent yaw lags through the turnaround and the camera never held
+    # the gate). Fall back to tangent heading within 1.5 m of the
+    # crossing and after the last gate; slew-limited attitude smooths
+    # the gate-switch step.
+    look_tgt = cross[np.clip(target_r, 0, N_GATES - 1)]
+    look_vec = look_tgt - pos_r
+    near = np.linalg.norm(look_vec[:, :2], axis=1) < 1.5
+    psi_r = np.where(near | (target_r >= N_GATES),
+                     np.arctan2(tan_r[:, 1], tan_r[:, 0]),
+                     np.arctan2(look_vec[:, 1], look_vec[:, 0]))
     hspeed = np.linalg.norm(tan_r[:, :2], axis=1)
-    psi_r = np.arctan2(tan_r[:, 1], tan_r[:, 0])
     slow = hspeed < 0.3
     if slow.any() and not slow.all():
         first_ok = int(np.argmax(~slow))
         psi_r[:first_ok] = psi_r[first_ok]
-    psi_r = _smooth(np.unwrap(psi_r), 15)
+    psi_r = _smooth(np.unwrap(psi_r), 9)
     look = np.stack([np.cos(psi_r), np.sin(psi_r),
                      np.zeros_like(psi_r)], axis=1)
     x_b = look - (look * z_b).sum(1, keepdims=True) * z_b
@@ -274,6 +281,7 @@ def build_reference(
         "gate": target_r.astype(np.int64),
         "t": tr.astype(np.float32),
         "cross": cross.astype(np.float32),
+        "normal": normal.astype(np.float32),
         "t_gate": t_gate.astype(np.float32),
         "planned_lap_s": lap_t,
         "offsets": off.astype(np.float32),
@@ -336,6 +344,18 @@ class FlatRefController:
         self.PSI = tt(ref["psi"])
         self.W = tt(ref["rates"])
         n_pts = len(self.P)
+        # gate-segment cursor clamp (live flight 33 ep1: the windowed
+        # nearest-row search jumped across the hairpin fold — post-turn
+        # rows are closer when the corner is cut — and the tracker dove
+        # through g3 chasing a reference pointed the other way; same
+        # reason the SAC teacher clamps its cursor to the active gate's
+        # segment)
+        self.cross_pt = tt(ref["cross"])                 # (17,3)
+        self.cross_n = tt(ref["normal"])
+        self.cross_row = torch.tensor(
+            np.clip(np.round(ref["t_gate"] / DT).astype(int), 0,
+                    n_pts - 1), device=dev)
+        self.cur_gate = torch.zeros(n_envs, dtype=torch.long, device=dev)
         speed = torch.linalg.norm(self.V, dim=1)
         past = torch.nonzero(speed > 1.5).squeeze(-1)
         self.launch_rows = int(past[0]) if len(past) else 40
@@ -364,6 +384,7 @@ class FlatRefController:
         self.idx[env_ids] = 0
         self.steps[env_ids] = 0
         self.trim[env_ids] = self.trim0
+        self.cur_gate[env_ids] = 0
 
     @torch.no_grad()
     def action(self, p: torch.Tensor, v: torch.Tensor,
@@ -392,6 +413,21 @@ class FlatRefController:
                                    dim=-1)
             nearest[li] = rows[torch.arange(len(li), device=self.dev),
                                d2.argmin(dim=1)]
+        # advance the gate cursor only on actual passage (plane crossed
+        # near the crossing point), then clamp the row index to the
+        # active gate's segment so the fold can't be skipped
+        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
+        rel = p - self.cross_pt[g]
+        along = (rel * self.cross_n[g]).sum(-1)
+        near_g = torch.linalg.norm(rel, dim=-1) < 2.2
+        passed = (along > 0.15) & near_g & (self.cur_gate < N_GATES)
+        self.cur_gate = torch.where(passed, self.cur_gate + 1,
+                                    self.cur_gate)
+        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
+        cap = torch.where(self.cur_gate >= N_GATES,
+                          torch.full_like(nearest, self.n_pts - 1),
+                          self.cross_row[g] + 2)
+        nearest = torch.minimum(nearest, cap)
         self.steps = self.steps + 1
         self.idx = nearest
         # scripted launch: chase a time-advancing row until the tracker
@@ -500,6 +536,16 @@ class BatchedFlatRefController:
         self.W = pad("rates", 3)
         self.n_pts = torch.tensor(
             [len(r["pos"]) for r in refs], device=dev)
+        self.cross_pt = torch.tensor(
+            np.stack([r["cross"] for r in refs]), dtype=torch.float32,
+            device=dev)                                   # (C,17,3)
+        self.cross_n = torch.tensor(
+            np.stack([r["normal"] for r in refs]), dtype=torch.float32,
+            device=dev)
+        self.cross_row = torch.tensor(np.stack([
+            np.clip(np.round(r["t_gate"] / DT).astype(int), 0,
+                    len(r["pos"]) - 1) for r in refs]), device=dev)
+        self.cur_gate = torch.zeros(n_envs, dtype=torch.long, device=dev)
         launch = []
         for r in refs:
             speed = np.linalg.norm(r["vel"], axis=1)
@@ -521,11 +567,13 @@ class BatchedFlatRefController:
     def reset(self, env_ids):
         self.idx[env_ids] = 0
         self.steps[env_ids] = 0
+        self.cur_gate[env_ids] = 0
 
     def reset_nearest(self, env_ids, p):
         # every reference starts at spawn; a fresh env starts at row 0
         self.idx[env_ids] = 0
         self.steps[env_ids] = 0
+        self.cur_gate[env_ids] = 0
 
     @torch.no_grad()
     def action(self, p: torch.Tensor, v: torch.Tensor,
@@ -541,6 +589,18 @@ class BatchedFlatRefController:
         dif = self.P[c[:, None], cand_rows] - p[:, None, :]
         best = torch.linalg.norm(dif, dim=-1).argmin(dim=1)
         nearest = cand_rows[torch.arange(n, device=self.dev), best]
+        # gate-segment cursor clamp (see FlatRefController)
+        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
+        rel = p - self.cross_pt[c, g]
+        along = (rel * self.cross_n[c, g]).sum(-1)
+        near_g = torch.linalg.norm(rel, dim=-1) < 2.2
+        passed = (along > 0.15) & near_g & (self.cur_gate < N_GATES)
+        self.cur_gate = torch.where(passed, self.cur_gate + 1,
+                                    self.cur_gate)
+        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
+        cap = torch.where(self.cur_gate >= N_GATES, last,
+                          torch.minimum(self.cross_row[c, g] + 2, last))
+        nearest = torch.minimum(nearest, cap)
         self.steps = self.steps + 1
         self.idx = nearest
         in_launch = nearest < self.launch_rows[c]
