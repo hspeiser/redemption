@@ -114,6 +114,16 @@ def main() -> int:
     parser.add_argument("--backbone-episode", type=Path,
                         default=REPO / "data/vq2_sac_runs/gate3_nstep_"
                         "v60b/20260730_161745/episode_0002.npz")
+    # line mode: fly a CEM-optimized reference (data/lineopt/*_best.npz)
+    # with the FlatRefController geometric tracker. Pure tracker by
+    # default; --line-residual-scale > 0 adds the policy as a bounded
+    # residual on top.
+    parser.add_argument("--line", type=Path, default=None)
+    parser.add_argument("--line-speed-cap", type=float, default=8.0)
+    parser.add_argument("--line-clearance", type=float, default=0.25)
+    parser.add_argument("--line-model", type=Path,
+                        default=REPO / "data/fastsim_model_v2.json")
+    parser.add_argument("--line-residual-scale", type=float, default=0.0)
     parser.add_argument("--cpu-affinity", default="0xC000")
     parser.add_argument("--torch-threads", type=int, default=2)
     parser.add_argument(
@@ -180,9 +190,32 @@ def main() -> int:
     )
 
     backbone = None
-    if args.residual:
-        from scipy.spatial.transform import Rotation
-
+    residual_scale = args.residual_scale
+    if args.line is not None:
+        from aigp.fastsim.lineopt import (
+            LineConfig, FlatRefController, N_GATES as LO_GATES,
+            build_reference, feedforward_actions, load_oriented_gates,
+        )
+        from aigp.fastsim.sysid import SurrogateModel
+        best = np.load(args.line)
+        theta = best["theta"]
+        gate_pos, gate_R = load_oriented_gates(args.map)
+        lcfg = LineConfig(speed_cap=args.line_speed_cap,
+                          clearance=args.line_clearance)
+        ref = build_reference(gate_pos, gate_R, theta[:LO_GATES * 2],
+                              theta[LO_GATES * 2:], lcfg)
+        line_model = SurrogateModel.load(str(args.line_model))
+        ff = feedforward_actions(ref, line_model)
+        backbone = FlatRefController(
+            ref, ff, n_envs=1, device="cpu",
+            speed_cap=args.line_speed_cap, model=line_model,
+        )
+        residual_scale = args.line_residual_scale
+        print(f"LINE mode: {args.line.name}, {backbone.n_pts} rows, "
+              f"planned lap {ref['planned_lap_s']:.1f}s, "
+              f"cap {args.line_speed_cap}, "
+              f"residual scale {residual_scale}")
+    elif args.residual:
         from aigp.fastsim.refctl import load_winner_backbone
         backbone = load_winner_backbone(
             str(args.backbone_demo), str(args.backbone_episode),
@@ -190,6 +223,9 @@ def main() -> int:
         )
         print(f"residual mode: backbone {backbone.n_pts} rows, "
               f"scale {args.residual_scale}")
+
+    if backbone is not None:
+        from scipy.spatial.transform import Rotation
 
         def combined_act(obs):
             st = localizer.state()
@@ -200,8 +236,10 @@ def main() -> int:
                 torch.tensor(st.velocity, dtype=torch.float32)[None],
                 torch.tensor(R, dtype=torch.float32)[None],
             )[0].numpy()
+            if residual_scale <= 0.0:
+                return np.clip(base, -1.0, 1.0)
             return np.clip(
-                base + args.residual_scale * act(obs), -1.0, 1.0
+                base + residual_scale * act(obs), -1.0, 1.0
             )
 
     def reset_with_retry(max_attempts: int = 6):
