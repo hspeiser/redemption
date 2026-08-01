@@ -23,11 +23,30 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
 from aigp.vq2_live_localizer import LiveVQ2Localizer  # noqa: E402
+
+
+def gate_crossing_offset(
+    gate: dict,
+    position_world: np.ndarray,
+) -> dict[str, float]:
+    """Express an estimated crossing position in the gate aperture frame."""
+    qw, qx, qy, qz = np.asarray(gate["quat_wxyz"], float)
+    rotation = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
+    local = rotation.T @ (
+        np.asarray(position_world, float)
+        - np.asarray(gate["pos"], float)
+    )
+    return {
+        "lateral_m": float(local[0]),
+        "plane_m": float(local[1]),
+        "vertical_m": float(local[2]),
+    }
 
 
 class ReplayMavlink:
@@ -119,6 +138,12 @@ def main() -> int:
         default=REPO / "data/calib/calib.json",
     )
     parser.add_argument("--vision-hz", type=float, default=3.0)
+    parser.add_argument("--vision-device", default="cpu")
+    parser.add_argument(
+        "--crop-tracker-gates",
+        default="",
+        help="Optional comma-separated crop-tracker target-gate allowlist.",
+    )
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
@@ -226,7 +251,17 @@ def main() -> int:
         proposal_checkpoint=args.proposal,
         calibration_path=args.calibration,
         async_interval_s=1.0 / args.vision_hz,
+        dense_device=args.vision_device,
         dense_process_isolation=False,
+        crop_track_gates=(
+            tuple(
+                int(value.strip())
+                for value in args.crop_tracker_gates.split(",")
+                if value.strip()
+            )
+            if args.crop_tracker_gates.strip()
+            else None
+        ),
     )
     print(f"crop tracker enabled: {localizer.crop_track_enabled}")
 
@@ -355,6 +390,24 @@ def main() -> int:
         np.interp(sims, step_sim, step_pos[:, axis]) for axis in range(3)
     ]).T
     err = np.linalg.norm(positions - reference, axis=1)
+    map_payload = json.loads(args.map.read_text())
+    gate_map = map_payload["gates"]
+    crossing_offsets = []
+    for step_index in range(1, len(episode_steps)):
+        previous_target = int(episode_steps[step_index - 1]["target"])
+        target = int(episode_steps[step_index]["target"])
+        if target != previous_target + 1 or previous_target >= len(gate_map):
+            continue
+        crossing_sim = float(episode_steps[step_index]["sim_time_s"])
+        replay_index = int(np.argmin(np.abs(sims - crossing_sim)))
+        crossing_offsets.append({
+            "gate": previous_target,
+            "sim_time_s": crossing_sim,
+            **gate_crossing_offset(
+                gate_map[previous_target],
+                positions[replay_index],
+            ),
+        })
     print("\n==== replay result ====")
     print(f"mode: crop_tracker={'ON' if localizer.crop_track_enabled else 'OFF'}")
     print(
@@ -372,7 +425,9 @@ def main() -> int:
         f"p90={np.percentile(err[in_window], 90):.3f}"
     )
     print("update counts:", localizer.update_counts)
+    print("replay crossing offsets:", crossing_offsets)
     if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps({
             "crop_tracker": localizer.crop_track_enabled,
             "age_p50": float(np.percentile(ages, 50)),
@@ -381,6 +436,7 @@ def main() -> int:
             "err_p50": float(np.percentile(err[in_window], 50)),
             "err_p90": float(np.percentile(err[in_window], 90)),
             "counts": localizer.update_counts,
+            "crossing_offsets": crossing_offsets,
             "log": log,
         }))
     return 0

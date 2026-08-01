@@ -157,6 +157,8 @@ def _dense_worker_main(
     result_queue,
     primary_checkpoint: str,
     refine_checkpoint: str,
+    gate_primary_checkpoint: str | None,
+    gate_primary_gates: tuple[int, ...],
     threshold: float,
     refine_radius_px: float,
     device_text: str,
@@ -170,7 +172,10 @@ def _dense_worker_main(
         torch.set_num_interop_threads(1)
         device = torch.device(device_text)
         models = []
-        for checkpoint_path in (primary_checkpoint, refine_checkpoint):
+        checkpoints = [primary_checkpoint, refine_checkpoint]
+        if gate_primary_checkpoint is not None:
+            checkpoints.append(gate_primary_checkpoint)
+        for checkpoint_path in checkpoints:
             payload = torch.load(
                 checkpoint_path, map_location=device, weights_only=False
             )
@@ -187,9 +192,14 @@ def _dense_worker_main(
             if request is None:
                 return
             started = time.perf_counter()
+            active_gate = int(request.get("active_gate", -1))
+            use_gate_primary = (
+                len(models) > 2
+                and active_gate in gate_primary_gates
+            )
             peaks = _dense_corner_peaks(
                 request["image"],
-                models[0],
+                models[2] if use_gate_primary else models[0],
                 models[1],
                 device,
                 threshold,
@@ -203,6 +213,7 @@ def _dense_worker_main(
                     time.perf_counter() - started
                 ) * 1000.0,
                 "worker_pid": os.getpid(),
+                "gate_primary_used": bool(use_gate_primary),
             }
             try:
                 result_queue.put(result, timeout=0.25)
@@ -369,6 +380,8 @@ class LiveVQ2Localizer:
         map_path: Path,
         primary_checkpoint: Path,
         refine_checkpoint: Path,
+        gate_primary_checkpoint: Path | None = None,
+        gate_primary_gates: tuple[int, ...] | None = None,
         crop_checkpoint: Path,
         proposal_checkpoint: Path,
         calibration_path: Path,
@@ -383,6 +396,10 @@ class LiveVQ2Localizer:
         dense_worker_threads: int = 4,
         dense_worker_affinity: str | None = None,
         direct_position_pins: bool = False,
+        crop_direct_position_pins: bool = False,
+        crop_track_enabled: bool | None = None,
+        crop_track_interval_s: float = 0.10,
+        crop_track_gates: tuple[int, ...] | None = None,
     ) -> None:
         self.mavlink = mavlink
         self.vision = vision
@@ -408,6 +425,7 @@ class LiveVQ2Localizer:
             float(max_async_result_age_s), 0.0
         )
         self.direct_position_pins = bool(direct_position_pins)
+        self.crop_direct_position_pins = bool(crop_direct_position_pins)
         self.device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu"
         )
@@ -419,12 +437,24 @@ class LiveVQ2Localizer:
         self.dense_worker_affinity = dense_worker_affinity
         self.primary_checkpoint = str(primary_checkpoint)
         self.refine_checkpoint = str(refine_checkpoint)
+        self.gate_primary_checkpoint = (
+            str(gate_primary_checkpoint)
+            if gate_primary_checkpoint is not None else None
+        )
+        self.gate_primary_gates = frozenset(
+            int(gate) for gate in (gate_primary_gates or ())
+        )
 
         self.primary = None
         self.refiner = None
+        self.gate_primary = None
         if not self.dense_process_isolation:
             self.primary = self._load_gatenet(primary_checkpoint)
             self.refiner = self._load_gatenet(refine_checkpoint)
+            if gate_primary_checkpoint is not None:
+                self.gate_primary = self._load_gatenet(
+                    gate_primary_checkpoint
+                )
         crop_payload = torch.load(
             crop_checkpoint, map_location=self.device, weights_only=False
         )
@@ -466,15 +496,24 @@ class LiveVQ2Localizer:
         self.update_counts = {
             "v7_v10": 0,
             "v7_v10_direct": 0,
+            "gate_primary_v10": 0,
+            "gate_primary_v10_direct": 0,
             "v11": 0,
             "classical_pin": 0,
             "net_relocalize": 0,
             "stale_vision_drop": 0,
+            "dense_gate_mismatch": 0,
             "none": 0,
             "crop_track": 0,
+            "crop_track_direct": 0,
             "crop_track_none": 0,
             "crop_track_stale": 0,
+            "crop_track_gate_mismatch": 0,
         }
+        self.dense_attempts_by_gate: dict[int, int] = {}
+        self.dense_fusions_by_gate: dict[int, int] = {}
+        self.crop_attempts_by_gate: dict[int, int] = {}
+        self.crop_fusions_by_gate: dict[int, int] = {}
         self.async_inference_ms = 0.0
         # Opt-in 10Hz crop tracker (AIGP_CROP_TRACKER=1): between dense
         # V7/V10 fixes, place a crop from the EKF's own corner projections
@@ -484,9 +523,24 @@ class LiveVQ2Localizer:
         # the 3Hz dense cadence lets belief coast ~1s on fast approaches.
         self.crop_track_enabled = (
             os.environ.get("AIGP_CROP_TRACKER") == "1"
+            if crop_track_enabled is None
+            else bool(crop_track_enabled)
         )
-        self.crop_track_interval_s = float(
-            os.environ.get("AIGP_CROP_TRACKER_INTERVAL", "0.10")
+        self.crop_track_gates = (
+            None
+            if crop_track_gates is None
+            else frozenset(int(gate) for gate in crop_track_gates)
+        )
+        self.crop_track_interval_s = max(
+            float(
+                os.environ.get(
+                    "AIGP_CROP_TRACKER_INTERVAL",
+                    str(crop_track_interval_s),
+                )
+                if crop_track_enabled is None
+                else crop_track_interval_s
+            ),
+            0.02,
         )
         self.crop_track_min_span_px = 30.0
         self.crop_track_max_age_s = 1.2
@@ -542,7 +596,9 @@ class LiveVQ2Localizer:
         array = np.frombuffer(frame_tuple[2], np.uint8)
         return cv2.imdecode(array, cv2.IMREAD_COLOR)
 
-    def _corner_peaks(self, image: np.ndarray):
+    def _corner_peaks(
+        self, image: np.ndarray, active_gate: int | None = None
+    ):
         if self.primary is None or self.refiner is None:
             raise RuntimeError(
                 "synchronous dense inference is unavailable while the "
@@ -550,7 +606,12 @@ class LiveVQ2Localizer:
             )
         return _dense_corner_peaks(
             image,
-            self.primary,
+            (
+                self.gate_primary
+                if self.gate_primary is not None
+                and active_gate in self.gate_primary_gates
+                else self.primary
+            ),
             self.refiner,
             self.dense_device,
             self.threshold,
@@ -792,15 +853,24 @@ class LiveVQ2Localizer:
         self.update_counts = {
             "v7_v10": 0,
             "v7_v10_direct": 0,
+            "gate_primary_v10": 0,
+            "gate_primary_v10_direct": 0,
             "v11": 0,
             "classical_pin": 0,
             "net_relocalize": 0,
             "stale_vision_drop": 0,
+            "dense_gate_mismatch": 0,
             "none": 0,
             "crop_track": 0,
+            "crop_track_direct": 0,
             "crop_track_none": 0,
             "crop_track_stale": 0,
+            "crop_track_gate_mismatch": 0,
         }
+        self.dense_attempts_by_gate = {}
+        self.dense_fusions_by_gate = {}
+        self.crop_attempts_by_gate = {}
+        self.crop_fusions_by_gate = {}
         self.async_inference_ms = 0.0
         self._async_last_dispatched = None
         with self._crop_lock:
@@ -871,7 +941,7 @@ class LiveVQ2Localizer:
         assert self.ekf is not None
         self.last_direct_pin_applied = False
         if peaks is None:
-            peaks = self._corner_peaks(image)
+            peaks = self._corner_peaks(image, active_gate)
         position_sigma = float(np.sqrt(max(
             np.trace(self.ekf.P[0:3, 0:3]), 0.0
         )))
@@ -884,7 +954,45 @@ class LiveVQ2Localizer:
         debug_expected = []
         debug_matches = []
         gate_hypotheses = []
-        for gate_index in (
+        # opt-in course-wide association (AIGP_MULTIGATE=1): every
+        # plausibly visible gate, global one-to-one peak assignment, and
+        # (with AIGP_MULTIGATE_ATT=1) attitude correction when at least
+        # two well-separated gates are accepted. Default path unchanged.
+        multigate_on = os.environ.get("AIGP_MULTIGATE") == "1"
+        multigate_constellation = None
+        update_attitude = False
+        if multigate_on:
+            from aigp.vq2_multigate import associate_multigate
+            far_deweight = os.environ.get("AIGP_FAR_DEWEIGHT") == "1"
+            gyro_hot = False
+            if far_deweight and self.mavlink.imu:
+                gyro_hot = float(np.linalg.norm(
+                    np.asarray(self.mavlink.imu[-1][4:7], float)
+                )) > 1.5
+            observations, debug_matches, multigate_constellation = \
+                associate_multigate(
+                    self.ekf, self.gate_world, peaks, radius,
+                    exclude_far=far_deweight and gyro_hot,
+                )
+            update_attitude = bool(
+                multigate_constellation["attitude_ok"]
+                and os.environ.get("AIGP_MULTIGATE_ATT") == "1"
+            )
+            for gate_index in multigate_constellation["visible_gates"]:
+                for physical, world_corner in enumerate(
+                    self.gate_world[gate_index]
+                ):
+                    projected, _ = self.ekf.predict_pixel(world_corner)
+                    if projected is not None:
+                        debug_expected.append({
+                            "gate": int(gate_index),
+                            "corner": int(physical),
+                            "pixel": [
+                                float(projected[0]),
+                                float(projected[1]),
+                            ],
+                        })
+        for gate_index in () if multigate_on else (
             active_gate - 1, active_gate, active_gate + 1
         ):
             if not 0 <= gate_index < min(17, len(self.gates)):
@@ -971,7 +1079,8 @@ class LiveVQ2Localizer:
         # of meters at 25-45m range (the bias behind the false
         # spawn-level back half in the map campaign). Drop far gates'
         # rows while the gyro is hot; close-range fusion is unaffected.
-        far_deweight = os.environ.get("AIGP_FAR_DEWEIGHT") == "1"
+        far_deweight = (not multigate_on) and \
+            os.environ.get("AIGP_FAR_DEWEIGHT") == "1"
         gyro_hot = False
         if far_deweight and self.mavlink.imu:
             gyro_hot = float(np.linalg.norm(
@@ -997,7 +1106,7 @@ class LiveVQ2Localizer:
         fused, accepted_indices = self.ekf.update_corners(
             observations,
             chi2_gate=chi2_gate,
-            update_attitude=False,
+            update_attitude=update_attitude,
             sigma_px=sigma_px,
             return_indices=True,
         )
@@ -1034,6 +1143,8 @@ class LiveVQ2Localizer:
                 "measurement_sigma_px": float(sigma_px),
                 "chi2_gate": float(chi2_gate),
                 "direct_pin": direct_pin,
+                "multigate": multigate_constellation,
+                "attitude_updated": bool(update_attitude),
             }
         return fused
 
@@ -1116,6 +1227,43 @@ class LiveVQ2Localizer:
             "blend": blend,
             "position": position.tolist(),
         }
+
+    def _direct_crop_position_pin(
+        self,
+        observations: list[tuple[np.ndarray, np.ndarray]],
+        active_gate: int,
+    ) -> dict | None:
+        """Apply the dense quad PnP pin recipe to a complete crop quad.
+
+        CropGateNet observations already carry the matched world corner, so
+        recover the physical inner-corner index and reuse the same guarded PnP
+        implementation as the dense path.  Partial three-corner crops remain
+        conservative EKF updates.
+        """
+        if not 0 <= active_gate < min(17, len(self.gate_world)):
+            return None
+        inner = np.asarray(self.gate_world[active_gate][:4], float)
+        matches = []
+        used: set[int] = set()
+        for world_corner, pixel in observations:
+            distances = np.linalg.norm(
+                inner - np.asarray(world_corner, float), axis=1
+            )
+            physical = int(np.argmin(distances))
+            if float(distances[physical]) > 1e-4 or physical in used:
+                continue
+            used.add(physical)
+            matches.append({
+                "gate": int(active_gate),
+                "physical": physical,
+                "observed": np.asarray(pixel, float),
+                "score": 1.0,
+            })
+        if len(matches) != 4:
+            return None
+        return self._direct_active_gate_pin(
+            matches, set(range(4)), int(active_gate)
+        )
 
     def dashboard_snapshot(self) -> tuple[np.ndarray | None, dict]:
         """Return a coherent copy of the latest frame-association debug data."""
@@ -1576,7 +1724,7 @@ class LiveVQ2Localizer:
             self.last_frame_id = frame[0]
             image = self._decode_jpeg(frame)
             if image is not None:
-                peaks = self._corner_peaks(image)
+                peaks = self._corner_peaks(image, int(active_gate))
                 fused = self._regular_corner_update(
                     image, int(active_gate), peaks=peaks
                 )
@@ -1621,7 +1769,9 @@ class LiveVQ2Localizer:
                 time.sleep(0.001)
                 continue
             started = time.perf_counter()
-            peaks = self._corner_peaks(job["image"])
+            peaks = self._corner_peaks(
+                job["image"], int(job["active_gate"])
+            )
             inference_ms = (time.perf_counter() - started) * 1000.0
             if stop_event.is_set():
                 return
@@ -1648,6 +1798,8 @@ class LiveVQ2Localizer:
                 self._dense_result_queue,
                 self.primary_checkpoint,
                 self.refine_checkpoint,
+                self.gate_primary_checkpoint,
+                tuple(sorted(self.gate_primary_gates)),
                 self.threshold,
                 self.refine_radius_px,
                 str(self.dense_device),
@@ -1713,6 +1865,9 @@ class LiveVQ2Localizer:
         job["peaks"] = worker_result["peaks"]
         job["inference_ms"] = float(worker_result["inference_ms"])
         job["worker_pid"] = int(worker_result["worker_pid"])
+        job["gate_primary_used"] = bool(
+            worker_result.get("gate_primary_used", False)
+        )
         return job
 
     def start_async(self) -> None:
@@ -1841,8 +1996,22 @@ class LiveVQ2Localizer:
                         "result_age_s": float(result_age_s),
                         "inference_ms": float(self.async_inference_ms),
                     })
+        if (
+            result is not None
+            and int(result["active_gate"]) != int(active_gate)
+        ):
+            # The official gate event is authoritative.  A vision result
+            # computed for the gate that was just passed must not replace
+            # the current EKF with its older snapshot.
+            result = None
+            self.last_update_source = "dense_gate_mismatch"
+            self.update_counts["dense_gate_mismatch"] += 1
         fused = 0
         if result is not None:
+            result_gate = int(result["active_gate"])
+            self.dense_attempts_by_gate[result_gate] = (
+                self.dense_attempts_by_gate.get(result_gate, 0) + 1
+            )
             self.ekf = result["ekf"]
             self.last_imu_us = result["last_imu_us"]
             self.last_gyro = result["last_gyro"]
@@ -1852,7 +2021,13 @@ class LiveVQ2Localizer:
                 peaks=result["peaks"],
             )
             source = (
-                "v7_v10_direct"
+                "gate_primary_v10_direct"
+                if fused
+                and result.get("gate_primary_used", False)
+                and self.last_direct_pin_applied
+                else "gate_primary_v10"
+                if fused and result.get("gate_primary_used", False)
+                else "v7_v10_direct"
                 if fused and self.last_direct_pin_applied
                 else "v7_v10" if fused
                 else "none"
@@ -1876,6 +2051,9 @@ class LiveVQ2Localizer:
             self.last_update_source = source
             self.update_counts[source] += 1
             if fused:
+                self.dense_fusions_by_gate[result_gate] = (
+                    self.dense_fusions_by_gate.get(result_gate, 0) + 1
+                )
                 self.last_visual_wall = float(result["frame_wall_ns"]) * 1e-9
             state_after = self.state()
             with self._debug_lock:
@@ -1904,7 +2082,12 @@ class LiveVQ2Localizer:
             ) * 1e-9
             self.crop_track_ms = float(crop_result.get("crop_ms", 0.0))
             observations = crop_result.get("obs")
-            if (
+            if int(crop_result["active_gate"]) != int(active_gate):
+                # Never rewind the filter with a crop of the gate that was
+                # just passed.  At racing speed the result can arrive after
+                # the official gate event has advanced the target.
+                self.update_counts["crop_track_gate_mismatch"] += 1
+            elif (
                 crop_result["dispatch_visual_wall"]
                 < self.last_visual_wall - 1e-6
             ):
@@ -1916,24 +2099,46 @@ class LiveVQ2Localizer:
                 observations
                 and crop_age_s <= self.crop_track_max_result_age_s
             ):
+                crop_gate = int(crop_result["active_gate"])
+                self.crop_attempts_by_gate[crop_gate] = (
+                    self.crop_attempts_by_gate.get(crop_gate, 0) + 1
+                )
                 self.ekf = crop_result["ekf"]
                 self.last_imu_us = crop_result["last_imu_us"]
                 self.last_gyro = crop_result["last_gyro"]
+                self.last_direct_pin_applied = False
                 crop_fused = self.ekf.update_corners(
                     observations,
                     chi2_gate=6.0,
                     update_attitude=False,
                     sigma_px=2.0,
                 )
+                crop_direct_pin = (
+                    self._direct_crop_position_pin(
+                        observations, int(crop_result["active_gate"])
+                    )
+                    if self.crop_direct_position_pins and crop_fused >= 2
+                    else None
+                )
                 self._propagate_imu()
                 if crop_fused >= 2:
+                    self.crop_fusions_by_gate[crop_gate] = (
+                        self.crop_fusions_by_gate.get(crop_gate, 0) + 1
+                    )
                     fused = crop_fused
                     self.last_visual_wall = (
                         float(crop_result["frame_wall_ns"]) * 1e-9
                     )
                     self.last_frame_id = int(crop_result["frame_id"])
-                    self.last_update_source = "crop_track"
-                    self.update_counts["crop_track"] += 1
+                    if (
+                        crop_direct_pin is not None
+                        and crop_direct_pin.get("accepted", False)
+                    ):
+                        self.last_update_source = "crop_track_direct"
+                        self.update_counts["crop_track_direct"] += 1
+                    else:
+                        self.last_update_source = "crop_track"
+                        self.update_counts["crop_track"] += 1
                 else:
                     self.update_counts["crop_track_none"] += 1
             else:
@@ -1977,6 +2182,7 @@ class LiveVQ2Localizer:
                         "generation": key[0],
                         "frame_id": key[1],
                         "image": image,
+                        "active_gate": int(active_gate),
                     }
                     try:
                         self._dense_request_queue.put_nowait(request)
@@ -1990,7 +2196,11 @@ class LiveVQ2Localizer:
                         self._async_job = job
                 self._async_last_dispatched = int(frame[0])
                 self._async_last_dispatch_wall = time.monotonic()
-        if self.crop_track_enabled and frame is not None:
+        crop_gate_enabled = (
+            self.crop_track_gates is None
+            or int(active_gate) in self.crop_track_gates
+        )
+        if self.crop_track_enabled and crop_gate_enabled and frame is not None:
             with self._crop_lock:
                 crop_idle = (
                     not self._crop_busy
@@ -2021,6 +2231,34 @@ class LiveVQ2Localizer:
                 self._crop_last_dispatch_wall = time.monotonic()
         self.last_fused = fused
         return self.state()
+
+    def vision_fusion_by_gate(self) -> dict[str, dict[str, float | int]]:
+        """Per-target detector acceptance rates for episode diagnostics."""
+        gates = sorted(
+            set(self.dense_attempts_by_gate)
+            | set(self.crop_attempts_by_gate)
+        )
+        summary: dict[str, dict[str, float | int]] = {}
+        for gate in gates:
+            dense_attempts = self.dense_attempts_by_gate.get(gate, 0)
+            dense_fusions = self.dense_fusions_by_gate.get(gate, 0)
+            crop_attempts = self.crop_attempts_by_gate.get(gate, 0)
+            crop_fusions = self.crop_fusions_by_gate.get(gate, 0)
+            summary[str(gate)] = {
+                "dense_attempts": dense_attempts,
+                "dense_fusions": dense_fusions,
+                "dense_rate": (
+                    dense_fusions / dense_attempts
+                    if dense_attempts else 0.0
+                ),
+                "crop_attempts": crop_attempts,
+                "crop_fusions": crop_fusions,
+                "crop_rate": (
+                    crop_fusions / crop_attempts
+                    if crop_attempts else 0.0
+                ),
+            }
+        return summary
 
     def state(self) -> LiveLocalizerState:
         if self.ekf is None:
