@@ -206,9 +206,12 @@ def main() -> int:
                               theta[LO_GATES * 2:], lcfg)
         line_model = SurrogateModel.load(str(args.line_model))
         ff = feedforward_actions(ref, line_model)
+        # trim0: the live plant hovers at ~0.25 wire vs the fitted
+        # curve's 0.295 (flight 31/32) -- seed the integrator there
         backbone = FlatRefController(
             ref, ff, n_envs=1, device="cpu",
             speed_cap=args.line_speed_cap, model=line_model,
+            trim0=-0.045, lead=6,
         )
         residual_scale = args.line_residual_scale
         print(f"LINE mode: {args.line.name}, {backbone.n_pts} rows, "

@@ -320,7 +320,7 @@ class FlatRefController:
 
     def __init__(self, ref: dict, ff_act: np.ndarray, n_envs: int,
                  device: str = "cpu", speed_cap: float = 1e9,
-                 model=None,
+                 model=None, trim0: float = 0.0,
                  kp: float = 2.0, kv: float = 2.8, katt: float = 5.0,
                  max_advance: int = 8, max_retreat: int = 2, lead: int = 4):
         dev = torch.device(device)
@@ -347,7 +347,8 @@ class FlatRefController:
         # flight 31: the un-trimmed tracker flew a steady 0.6 m high --
         # kp*0.6 exactly balanced the excess hover thrust -- then clipped
         # the gate-0 frame correcting it in the final metre)
-        self.trim = torch.zeros(n_envs, device=dev)
+        self.trim0 = float(trim0)
+        self.trim = torch.full((n_envs,), self.trim0, device=dev)
         self.trim_ki = 0.004
         self.trim_lim = 0.08
         self.n_envs = n_envs
@@ -362,7 +363,7 @@ class FlatRefController:
     def reset(self, env_ids):
         self.idx[env_ids] = 0
         self.steps[env_ids] = 0
-        self.trim[env_ids] = 0.0
+        self.trim[env_ids] = self.trim0
 
     @torch.no_grad()
     def action(self, p: torch.Tensor, v: torch.Tensor,
@@ -376,6 +377,21 @@ class FlatRefController:
         dist = torch.linalg.norm(dif, dim=-1)
         best = dist.argmin(dim=1)
         nearest = cand[torch.arange(n, device=self.dev), best]
+        best_d = dist[torch.arange(n, device=self.dev), best]
+        # lost-tracker recovery (live flight 32 ep4: a wide crossing left
+        # the windowed index behind and the drone circled at no-progress):
+        # when the nearest window row is >3 m away, re-seek over a long
+        # forward stretch of the path
+        lost = best_d > 3.0
+        if bool(lost.any()):
+            li = torch.nonzero(lost).squeeze(-1)
+            span = torch.arange(0, 400, 4, device=self.dev)
+            rows = torch.clamp(self.idx[li][:, None] - 20 + span[None, :],
+                               0, self.n_pts - 1)
+            d2 = torch.linalg.norm(self.P[rows] - p[li][:, None, :],
+                                   dim=-1)
+            nearest[li] = rows[torch.arange(len(li), device=self.dev),
+                               d2.argmin(dim=1)]
         self.steps = self.steps + 1
         self.idx = nearest
         # scripted launch: chase a time-advancing row until the tracker
