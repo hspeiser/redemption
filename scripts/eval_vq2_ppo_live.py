@@ -293,6 +293,11 @@ def main() -> int:
                 )
                 observation, reward, term, trunc, step_info = \
                     environment.step(action)
+                if backbone is not None and hasattr(backbone, "cur_gate"):
+                    # race status is authoritative: belief-based plane
+                    # tests can advance (or fail to advance) the gate
+                    # cursor when the estimate drifts at the reversals
+                    backbone.cur_gate[0] = int(step_info["target"])
                 ep_reward += float(reward)
                 steps += 1
                 done = term or trunc
