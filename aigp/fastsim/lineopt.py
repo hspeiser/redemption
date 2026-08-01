@@ -341,6 +341,15 @@ class FlatRefController:
         self.launch_rows = int(past[0]) if len(past) else 40
         self.idx = torch.zeros(n_envs, dtype=torch.long, device=dev)
         self.steps = torch.zeros(n_envs, dtype=torch.long, device=dev)
+        # integral wire-thrust trim: the live plant's hover point sits
+        # ~0.045 wire under the fitted motor curve (0.25 vs 0.295); a
+        # slow integrator on climb-rate error absorbs that bias (live
+        # flight 31: the un-trimmed tracker flew a steady 0.6 m high --
+        # kp*0.6 exactly balanced the excess hover thrust -- then clipped
+        # the gate-0 frame correcting it in the final metre)
+        self.trim = torch.zeros(n_envs, device=dev)
+        self.trim_ki = 0.004
+        self.trim_lim = 0.08
         self.n_envs = n_envs
         self.n_pts = n_pts
         self.dev = dev
@@ -353,6 +362,7 @@ class FlatRefController:
     def reset(self, env_ids):
         self.idx[env_ids] = 0
         self.steps[env_ids] = 0
+        self.trim[env_ids] = 0.0
 
     @torch.no_grad()
     def action(self, p: torch.Tensor, v: torch.Tensor,
@@ -415,6 +425,15 @@ class FlatRefController:
         T_cmd = (-(tvec) * R[:, :, 2]).sum(-1).clamp(min=2.0, max=26.0)
         wire = (-self.g1 + torch.sqrt(
             self.g1 * self.g1 + 4.0 * self.g2 * T_cmd)) / (2.0 * self.g2)
+        # hover-bias integral trim on climb-rate error (z-down: climb
+        # error positive when sinking relative to plan -> raise thrust)
+        e_climb = torch.clamp(
+            (v[:, 2] - self.V[k][:, 2])
+            + 0.8 * (p[:, 2] - self.P[k][:, 2]), -1.5, 1.5)
+        self.trim = torch.clamp(
+            self.trim + self.trim_ki * e_climb,
+            -self.trim_lim, self.trim_lim)
+        wire = wire + self.trim
         # overspeed governor: the env kills above the cap
         speed = torch.linalg.norm(v, dim=-1)
         over = torch.clamp(
