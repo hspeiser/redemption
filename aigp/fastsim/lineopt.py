@@ -427,6 +427,148 @@ class FlatRefController:
         return torch.cat([act_rates, a3[:, None]], dim=1)
 
 
+class BatchedFlatRefController:
+    """FlatRefController over a POPULATION of references at once.
+
+    Env e tracks candidate e // envs_per_cand.  References are padded to
+    the longest row count (repeating the final row), so the whole
+    population flies in a single FastVQ2Env batch and the GPU stays fed.
+    Same control law as FlatRefController.
+    """
+
+    def __init__(self, refs: list, n_per: int, device: str = "cpu",
+                 speed_cap: float = 1e9, model=None,
+                 kp: float = 2.0, kv: float = 2.8, katt: float = 5.0,
+                 max_advance: int = 8, max_retreat: int = 2, lead: int = 4):
+        dev = torch.device(device)
+        C = len(refs)
+        n_envs = C * n_per
+        self.speed_cap = float(speed_cap)
+        self.g1 = float(model.thrust_gain) if model is not None else 14.05
+        self.g2 = float(model.thrust_quad) if model is not None else 64.86
+        self.kp, self.kv, self.katt = kp, kv, katt
+        N = max(len(r["pos"]) for r in refs)
+
+        def pad(key, width):
+            out = np.zeros((C, N, width) if width > 1 else (C, N),
+                           np.float32)
+            for c, r in enumerate(refs):
+                a = r[key]
+                out[c, :len(a)] = a
+                out[c, len(a):] = a[-1]
+            return torch.tensor(out, device=dev)
+
+        self.P = pad("pos", 3)
+        self.V = pad("vel", 3)
+        self.ACC = pad("acc", 3)
+        self.PSI = pad("psi", 1)
+        self.W = pad("rates", 3)
+        self.n_pts = torch.tensor(
+            [len(r["pos"]) for r in refs], device=dev)
+        launch = []
+        for r in refs:
+            speed = np.linalg.norm(r["vel"], axis=1)
+            past = np.nonzero(speed > 1.5)[0]
+            launch.append(int(past[0]) if len(past) else 40)
+        self.launch_rows = torch.tensor(launch, device=dev)
+        self.cand = torch.arange(n_envs, device=dev) // n_per
+        self.idx = torch.zeros(n_envs, dtype=torch.long, device=dev)
+        self.steps = torch.zeros(n_envs, dtype=torch.long, device=dev)
+        self.n_envs = n_envs
+        self.dev = dev
+        self.max_advance = max_advance
+        self.max_retreat = max_retreat
+        self.lead = lead
+        self.rate_scale = torch.tensor(RATE_ACTUAL, dtype=torch.float32,
+                                       device=dev)
+        self.g_vec = torch.tensor([0.0, 0.0, G], device=dev)
+
+    def reset(self, env_ids):
+        self.idx[env_ids] = 0
+        self.steps[env_ids] = 0
+
+    def reset_nearest(self, env_ids, p):
+        # every reference starts at spawn; a fresh env starts at row 0
+        self.idx[env_ids] = 0
+        self.steps[env_ids] = 0
+
+    @torch.no_grad()
+    def action(self, p: torch.Tensor, v: torch.Tensor,
+               R: torch.Tensor) -> torch.Tensor:
+        n = p.shape[0]
+        c = self.cand
+        last = self.n_pts[c] - 1
+        offs = torch.arange(-self.max_retreat, self.max_advance + 1,
+                            device=self.dev)
+        cand_rows = torch.clamp(
+            self.idx[:, None] + offs[None, :], torch.zeros_like(
+                last)[:, None], last[:, None])
+        dif = self.P[c[:, None], cand_rows] - p[:, None, :]
+        best = torch.linalg.norm(dif, dim=-1).argmin(dim=1)
+        nearest = cand_rows[torch.arange(n, device=self.dev), best]
+        self.steps = self.steps + 1
+        self.idx = nearest
+        in_launch = nearest < self.launch_rows[c]
+        k = torch.minimum(self.idx + self.lead, last)
+        floor_row = torch.minimum(self.steps + 5, self.launch_rows[c])
+        k = torch.where(in_launch, floor_row, k)
+
+        e_p = torch.clamp(self.P[c, k] - p, -3.0, 3.0)
+        e_v = torch.clamp(self.V[c, k] - v, -4.0, 4.0)
+        drag = 0.30 * v + 0.030 * torch.linalg.norm(
+            v, dim=-1, keepdim=True) * v
+        a_des = self.ACC[c, k] + drag + self.kp * e_p + self.kv * e_v
+        a_des[:, 2] = torch.clamp(a_des[:, 2], max=0.5 * G)
+        tvec = a_des - self.g_vec
+        T_norm = torch.linalg.norm(tvec, dim=-1).clamp(min=3.0)
+        z_des = -tvec / T_norm[:, None]
+
+        psi = self.PSI[c, k]
+        look = torch.stack([torch.cos(psi), torch.sin(psi),
+                            torch.zeros_like(psi)], dim=1)
+        x_des = look - (look * z_des).sum(-1, keepdim=True) * z_des
+        x_des = torch.nn.functional.normalize(x_des, dim=1, eps=1e-6)
+        y_des = torch.linalg.cross(z_des, x_des)
+        R_des = torch.stack([x_des, y_des, z_des], dim=2)
+
+        E = torch.einsum("nij,njk->nik", R.transpose(1, 2), R_des)
+        trace = E[:, 0, 0] + E[:, 1, 1] + E[:, 2, 2]
+        ang = torch.arccos(torch.clamp(0.5 * (trace - 1.0), -1.0, 1.0))
+        vee = torch.stack([E[:, 2, 1] - E[:, 1, 2],
+                           E[:, 0, 2] - E[:, 2, 0],
+                           E[:, 1, 0] - E[:, 0, 1]], dim=1)
+        sin_a = torch.sin(ang).clamp(min=1e-4)
+        rotvec = vee * (ang / (2.0 * sin_a))[:, None]
+
+        rate_cmd = self.W[c, k] + self.katt * rotvec
+        act_rates = torch.clamp(rate_cmd / self.rate_scale, -1.0, 1.0)
+
+        T_cmd = (-(tvec) * R[:, :, 2]).sum(-1).clamp(min=2.0, max=26.0)
+        wire = (-self.g1 + torch.sqrt(
+            self.g1 * self.g1 + 4.0 * self.g2 * T_cmd)) / (2.0 * self.g2)
+        speed = torch.linalg.norm(v, dim=-1)
+        over = torch.clamp(
+            (speed - 0.88 * self.speed_cap) / (0.12 * self.speed_cap),
+            0.0, 1.0,
+        )
+        wire = wire - 0.20 * over
+        wire = torch.where(in_launch, wire.clamp(min=0.36), wire)
+        a3 = 2.0 * torch.clamp(wire, 0.02, 0.52) - 1.0
+        return torch.cat([act_rates, a3[:, None]], dim=1)
+
+
+def demo_states_from_pop(refs: list) -> dict:
+    """Union corridor + spawn source over a candidate population."""
+    return {
+        "pos": np.concatenate([r["pos"][::3] for r in refs], axis=0),
+        "vel": np.concatenate([r["vel"][::3] for r in refs], axis=0),
+        "quat": np.concatenate([r["quat_wxyz"][::3] for r in refs],
+                               axis=0),
+        "gate": np.concatenate(
+            [r["gate"][::3].astype(np.float32) for r in refs], axis=0),
+    }
+
+
 def demo_states_from_ref(ref: dict) -> dict:
     """FastVQ2Env demo_states dict (corridor + start curriculum source)."""
     return {

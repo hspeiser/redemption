@@ -392,11 +392,14 @@ class FastVQ2Env:
             (n,), device=dev,
         )
         if self.backbone is not None:
-            d = torch.linalg.norm(
-                self.backbone.P[None, :, :] - p[:, None, :], dim=-1
-            )
-            self.backbone.idx[idx] = d.argmin(dim=1)
-            self.backbone.steps[idx] = self.backbone.idx[idx].clone()
+            if hasattr(self.backbone, "reset_nearest"):
+                self.backbone.reset_nearest(idx, p)
+            else:
+                d = torch.linalg.norm(
+                    self.backbone.P[None, :, :] - p[:, None, :], dim=-1
+                )
+                self.backbone.idx[idx] = d.argmin(dim=1)
+                self.backbone.steps[idx] = self.backbone.idx[idx].clone()
         self.noise_pos[idx] = 0.0
         self.vis_age[idx] = 0.0
         self.noise_amp[idx] = (

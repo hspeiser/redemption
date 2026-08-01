@@ -28,9 +28,9 @@ sys.path.insert(0, str(REPO))
 from aigp.fastsim.env import FastEnvConfig, FastVQ2Env, ACT_DIM, HOLE_HALF  # noqa: E402
 from aigp.fastsim.sysid import SurrogateModel  # noqa: E402
 from aigp.fastsim.lineopt import (  # noqa: E402
-    LineConfig, FlatRefController, N_GATES, build_reference,
-    demo_states_from_ref, feasibility, feedforward_actions,
-    load_oriented_gates,
+    BatchedFlatRefController, LineConfig, FlatRefController, N_GATES,
+    build_reference, demo_states_from_pop, demo_states_from_ref,
+    feasibility, feedforward_actions, load_oriented_gates,
 )
 
 
@@ -161,6 +161,66 @@ def evaluate(ref, ff, model, args, device, max_steps=2400,
     return out
 
 
+def evaluate_population(refs, model, args, device, max_steps=2400):
+    """Fly ALL candidates in one batched env; per-candidate metrics."""
+    C = len(refs)
+    per = args.n_envs
+    cfg = make_env_cfg(args)
+    cfg.n_envs = C * per
+    n = cfg.n_envs
+    backbone = BatchedFlatRefController(
+        refs, per, device=str(device), speed_cap=args.speed_cap,
+        model=model)
+    env = FastVQ2Env(model, args.map, demo_states=demo_states_from_pop(refs),
+                     config=cfg, device=str(device),
+                     obstacles_path=args.obstacles or None,
+                     backbone=backbone)
+    zeros = torch.zeros(n, ACT_DIM, device=device)
+    finished = torch.zeros(n, dtype=torch.bool, device=device)
+    failed = torch.zeros(n, dtype=torch.bool, device=device)
+    lap = torch.zeros(n, device=device)
+    alive_steps = torch.zeros(n, device=device)
+    clear_min = torch.full((n, N_GATES), np.nan, device=device)
+    dt = 1.0 / cfg.control_hz
+    ar = torch.arange(n, device=device)
+    with torch.no_grad():
+        for _ in range(max_steps):
+            _obs, _r, done, info = env.step(zeros)
+            live = ~(finished | failed)
+            alive_steps += live.float()
+            ok = info["passed"] & live
+            if ok.any():
+                gid = torch.clamp(info["target"] - 1, 0, N_GATES - 1)
+                margin = 0.75 - info["cross_r"]
+                cur = clear_min[ar, gid]
+                upd = torch.where(torch.isnan(cur), margin,
+                                  torch.minimum(cur, margin))
+                clear_min[ar, gid] = torch.where(ok, upd, cur)
+            newly_fin = info["finished"] & live
+            lap = torch.where(newly_fin, alive_steps * dt, lap)
+            finished |= newly_fin
+            failed |= done & live & ~info["finished"]
+            if float((finished | failed).float().mean()) > 0.999:
+                break
+    finC = finished.view(C, per)
+    lapC = lap.view(C, per)
+    out = []
+    cmin = clear_min.view(C, per, N_GATES).cpu().numpy()
+    for ci in range(C):
+        fr = float(finC[ci].float().mean())
+        m = {"finish_rate": fr, "n_envs": per,
+             "lap_median": float(lapC[ci][finC[ci]].median())
+             if fr else None,
+             "lap_best": float(lapC[ci][finC[ci]].min()) if fr else None}
+        with np.errstate(all="ignore"):
+            m["clearance_p05_by_gate"] = [
+                round(float(np.nanquantile(cmin[ci, :, g], 0.05)), 3)
+                if np.isfinite(cmin[ci, :, g]).any() else None
+                for g in range(N_GATES)]
+        out.append(m)
+    return out
+
+
 def score(metrics, ref) -> float:
     fr = metrics["finish_rate"]
     lap = metrics["lap_median"] if metrics["lap_median"] else 200.0
@@ -214,13 +274,6 @@ def main() -> int:
         sc = np.clip(theta[N_GATES * 2:], 0.35, 1.0)
         return off, sc
 
-    def run(theta):
-        off, sc = unpack(theta)
-        ref = build_reference(gate_pos, gate_R, off, sc, lcfg)
-        ff = feedforward_actions(ref, model)
-        m = evaluate(ref, ff, model, args, device)
-        return score(m, ref), m, ref
-
     history = []
     best = {"score": -1e9}
     t0 = time.time()
@@ -228,19 +281,32 @@ def main() -> int:
         thetas = mean[None] + sd[None] * rng.standard_normal(
             (args.pop, n_par))
         thetas[0] = mean                     # always test the mean
+        if best.get("theta") is not None:
+            thetas[1] = best["theta"]        # elitism: keep the champion
+        t_it = time.time()
+        refs = []
+        for th in thetas:
+            off, sc = unpack(th)
+            refs.append(build_reference(gate_pos, gate_R, off, sc, lcfg))
+        t_build = time.time() - t_it
+        mets = evaluate_population(refs, model, args, device)
         results = []
-        for j, th in enumerate(thetas):
-            sc_j, m_j, ref_j = run(th)
+        for j, (th, ref_j, m_j) in enumerate(zip(thetas, refs, mets)):
+            sc_j = score(m_j, ref_j)
             results.append((sc_j, th))
             if sc_j > best["score"]:
                 best = {"score": sc_j, "theta": th.copy(),
                         "metrics": m_j,
                         "planned_lap": ref_j["planned_lap_s"],
                         "feas": feasibility(ref_j)}
-            print(f"[it {it} cand {j}] score {sc_j:8.2f} "
-                  f"fin {m_j['finish_rate']:.2f} "
-                  f"lap {m_j['lap_median']} "
-                  f"({time.time() - t0:.0f}s)", flush=True)
+        top = max(results, key=lambda r: r[0])
+        fin_top = max(m["finish_rate"] for m in mets)
+        print(f"[it {it}] best_score {top[0]:8.2f} "
+              f"best_fin {fin_top:.2f} "
+              f"champion {best['score']:.2f}/"
+              f"lap {best['metrics']['lap_median']} "
+              f"({time.time() - t0:.0f}s, build {t_build:.0f}s)",
+              flush=True)
         results.sort(key=lambda r: -r[0])
         elite = np.stack([th for _s, th in results[:args.elite]])
         mean = 0.4 * mean + 0.6 * elite.mean(0)

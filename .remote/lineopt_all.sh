@@ -7,7 +7,7 @@ run() {
   echo "=== $tag (cap $cap, clearance $clr) ==="
   .venv/bin/python scripts/fastsim_line_opt.py \
     --speed-cap "$cap" --clearance "$clr" \
-    --n-envs 256 --pop 28 --elite 7 --iters 10 --device cuda \
+    --n-envs 256 --pop 32 --elite 8 --iters 14 --device cuda \
     --out-prefix "data/lineopt/$tag" > "data/lineopt/$tag.log" 2>&1
   echo "=== $tag done rc=$? ==="
 }
