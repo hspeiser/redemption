@@ -19,6 +19,17 @@ Reference: the fastest real VQ2 lap ever flown is your teacher's 40.01 s.
 The cap-10 line completes clean at 39.7 s and its noisy-median matches
 your record while finishing 73 % of heavily randomized worlds.
 
+## Two action flavors per line
+
+`*_ideal.npz` variants (same basename + `_ideal`) carry the optimized
+reference states with **feedforward-only** actions — no tracking
+feedback baked in. Use those as the reference table for the live SAC
+reference controller (which adds its own feedback); the plain files
+record the surrogate tracker's **closed-loop** flight (feedback included)
+and suit imitation/BC of full actions. Ideal laps run at the planned
+profile (52.3 / 44.9 / 42.4 s); closed-loop laps are faster because the
+tracker beats the conservative plan.
+
 ## How they were made / what the numbers mean
 
 - Search: CEM over per-gate hole-plane crossing offsets (bounded to

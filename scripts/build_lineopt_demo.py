@@ -97,6 +97,35 @@ def clean_rollout(ref, ff, model, map_path, obstacles, speed_cap,
     return rows
 
 
+def ideal_reference_rows(ref, ff):
+    """Return the optimized line itself with feedforward-only actions.
+
+    ``clean_rollout`` records the actions emitted by ``FlatRefController``.
+    Those actions already contain that controller's position/velocity and
+    attitude feedback.  They are appropriate demonstrations for an
+    end-to-end policy, but not as the feedforward table for the live SAC
+    reference controller, which adds its own tracking feedback.  This mode
+    preserves the optimized geometry while avoiding double feedback.
+    """
+    rows = []
+    target_raw = np.asarray(ref["gate"], int)
+    target = np.clip(target_raw, 0, N_GATES - 1)
+    for index in range(len(ref["pos"])):
+        rows.append({
+            "p": np.asarray(ref["pos"][index], np.float32),
+            "v": np.asarray(ref["vel"][index], np.float32),
+            "q": np.asarray(ref["quat_wxyz"][index], np.float32),
+            "w": np.asarray(ref["rates"][index], np.float32),
+            "target": int(target[index]),
+            "action": np.asarray(ff[index], np.float32),
+            "passed": int(
+                index > 0 and target_raw[index] > target_raw[index - 1]
+            ),
+            "finished": index == len(ref["pos"]) - 1,
+        })
+    return rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--best", required=True,
@@ -111,6 +140,15 @@ def main() -> int:
         REPO / "data/vq2_obstacles_inflated.json"))
     ap.add_argument("--out", required=True)
     ap.add_argument("--tag", default="")
+    ap.add_argument(
+        "--ideal-reference",
+        action="store_true",
+        help=(
+            "write optimized reference states with feedforward-only actions "
+            "for the live SAC reference controller; default records the "
+            "surrogate FlatRefController's closed-loop actions"
+        ),
+    )
     args = ap.parse_args()
 
     best = np.load(args.best)
@@ -122,8 +160,12 @@ def main() -> int:
     ref = build_reference(gate_pos, gate_R, off, sc, lcfg)
     model = SurrogateModel.load(args.model)
     ff = feedforward_actions(ref, model)
-    rows = clean_rollout(ref, ff, model, args.map, args.obstacles,
-                         args.speed_cap)
+    rows = (
+        ideal_reference_rows(ref, ff)
+        if args.ideal_reference
+        else clean_rollout(ref, ff, model, args.map, args.obstacles,
+                           args.speed_cap)
+    )
     n = len(rows)
     lap_s = n * DT
     print(f"clean lap FINISHED: {lap_s:.2f}s over {n} rows")
