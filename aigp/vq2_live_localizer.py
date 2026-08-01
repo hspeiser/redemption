@@ -974,9 +974,15 @@ class LiveVQ2Localizer:
                     self.ekf, self.gate_world, peaks, radius,
                     exclude_far=far_deweight and gyro_hot,
                 )
+            # attitude is ON by default when the constellation supports
+            # it: replay bench showed position-only multigate diverges
+            # (1.8m/21m on the ep32 benchmark) because a refused
+            # attitude correction gets squeezed into position until an
+            # association slips. AIGP_MULTIGATE_POSONLY=1 exists for
+            # experiments only.
             update_attitude = bool(
                 multigate_constellation["attitude_ok"]
-                and os.environ.get("AIGP_MULTIGATE_ATT") == "1"
+                and os.environ.get("AIGP_MULTIGATE_POSONLY") != "1"
             )
             for gate_index in multigate_constellation["visible_gates"]:
                 for physical, world_corner in enumerate(

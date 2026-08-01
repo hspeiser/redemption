@@ -107,8 +107,13 @@ def associate_multigate(
     attitude_min_gates=2,
     attitude_min_rows=6,
     attitude_min_separation_deg=12.0,
+    attitude_max_range_m=1e9,
     exclude_far=False,
 ):
+    # NOTE do not tighten the attitude gate: the round-2 bench (18deg/
+    # 10 rows/30m) reintroduced the position-only divergence channel
+    # (ep25: 8.5m). Frequent attitude correction is what keeps the
+    # multi-gate joint solve consistent.
     """Global one-to-one gate/peak association.
 
     Returns (observations, debug_matches, constellation) where
@@ -195,13 +200,17 @@ def associate_multigate(
                 "range_m": float(rng),
             })
 
-    # constellation conditioning for attitude safety
+    # constellation conditioning for attitude safety: only CLOSE,
+    # well-separated gates qualify (far-gate projections carry
+    # attitude-lag error that would feed back into the attitude fix)
     attitude_ok = False
     max_sep_deg = 0.0
-    if len(accepted_gates) >= attitude_min_gates and \
+    att_gates = [g for g in accepted_gates
+                 if range_of[g] <= attitude_max_range_m]
+    if len(att_gates) >= attitude_min_gates and \
             len(observations) >= attitude_min_rows:
         bearings = []
-        for gate_index in accepted_gates:
+        for gate_index in att_gates:
             center = np.mean(gate_world[gate_index], axis=0)
             vec = center - ekf.p
             norm = np.linalg.norm(vec)
