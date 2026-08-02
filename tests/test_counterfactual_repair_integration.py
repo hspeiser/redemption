@@ -7,6 +7,7 @@ from torch import nn
 
 from aigp.fastsim.branching import (
     calibrated_position_sigma,
+    repair_race_gates,
     restore_branch_cloud,
 )
 from aigp.rl.counterfactual_gate import (
@@ -72,6 +73,14 @@ class FakeBranchEnv:
 
 
 class CounterfactualRepairIntegrationTests(unittest.TestCase):
+    def test_repair_horizon_keeps_late_gate_active(self) -> None:
+        self.assertEqual(repair_race_gates(4), 5)
+        self.assertEqual(repair_race_gates(5), 6)
+        self.assertEqual(repair_race_gates(6), 7)
+        self.assertEqual(repair_race_gates(16), 17)
+        with self.assertRaises(ValueError):
+            repair_race_gates(17)
+
     def test_position_sigma_calibration_uses_measured_floor(self) -> None:
         self.assertAlmostEqual(
             calibrated_position_sigma(0.03, scale=2.0, floor_m=0.15),

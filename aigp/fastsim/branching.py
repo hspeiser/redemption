@@ -20,6 +20,14 @@ def calibrated_position_sigma(
     return max(float(floor_m), max(0.0, float(scale)) * raw)
 
 
+def repair_race_gates(target_gate: int) -> int:
+    """Return the minimum race horizon that keeps a repair target active."""
+    gate = int(target_gate)
+    if not 0 <= gate < 17:
+        raise ValueError(f"target_gate must be in [0, 16], got {gate}")
+    return max(5, gate + 1)
+
+
 def matrices_to_wxyz(rotation: np.ndarray) -> np.ndarray:
     xyzw = Rotation.from_matrix(np.asarray(rotation, float)).as_quat()
     return np.column_stack([xyzw[:, 3], xyzw[:, :3]]).astype(np.float32)

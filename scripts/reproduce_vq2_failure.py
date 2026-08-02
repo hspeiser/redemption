@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO))
 
 from aigp.fastsim.branching import (
     calibrated_position_sigma,
+    repair_race_gates,
     restore_branch_cloud,
 )
 from aigp.fastsim.env import FastEnvConfig, FastVQ2Env
@@ -56,7 +57,7 @@ def reproduce(
         # Counterfactual repair originally targeted gates 0-4.  Keeping this
         # hard-coded at five makes any branch already targeting gate 5+ end
         # immediately as a wrong terminal on its first simulated step.
-        race_gates=max(5, failure_target_gate + 1),
+        race_gates=repair_race_gates(failure_target_gate),
         random_start_frac=0.0,
         spawn_at_rest=True,
         max_episode_s=3.0,

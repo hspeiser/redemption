@@ -31,4 +31,4 @@ cd /d C:\Users\henry\aigp
   --max-disagreement-p90 0.10 ^
   --seed 20260863 ^
   --device cuda ^
-  --out worldmodel\repairs\flywheel_g6_geometry_repair_v2
+  --out worldmodel\repairs\flywheel_g6_geometry_repair_v3_gatecountfix

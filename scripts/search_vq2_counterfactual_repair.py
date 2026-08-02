@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO))
 
 from aigp.fastsim.branching import (  # noqa: E402
     calibrated_position_sigma,
+    repair_race_gates,
     restore_branch_cloud,
 )
 from aigp.fastsim.env import HOLE_HALF, FastEnvConfig, FastVQ2Env  # noqa: E402
@@ -121,7 +122,7 @@ def evaluate_model(
     table = torch.as_tensor(values, dtype=torch.float32, device=device)
     cfg = FastEnvConfig(
         n_envs=n,
-        race_gates=max(5, failure_target_gate + 1),
+        race_gates=repair_race_gates(failure_target_gate),
         random_start_frac=0.0,
         spawn_at_rest=True,
         max_episode_s=4.0,
@@ -139,7 +140,10 @@ def evaluate_model(
         dr_drag=(0.22, 0.34),
     )
     arrays, fixed = load_live_teacher_config(
-        teacher_config, n, map_path=map_path
+        teacher_config,
+        n,
+        gate_count=repair_race_gates(failure_target_gate),
+        map_path=map_path,
     )
     geometry = np.zeros((candidates, 3), np.float64)
     if geometry_search:

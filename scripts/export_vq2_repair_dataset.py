@@ -20,7 +20,10 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from aigp.fastsim.branching import restore_branch_cloud  # noqa: E402
+from aigp.fastsim.branching import (  # noqa: E402
+    repair_race_gates,
+    restore_branch_cloud,
+)
 from aigp.fastsim.env import FastEnvConfig, FastVQ2Env  # noqa: E402
 from aigp.fastsim.lineopt import load_oriented_gates  # noqa: E402
 from aigp.fastsim.live_teacher import LiveTeacherController  # noqa: E402
@@ -72,7 +75,7 @@ def collect_family(
     total_steps = max(tail_steps + post_steps, len(knots_np))
     cfg = FastEnvConfig(
         n_envs=worlds,
-        race_gates=max(5, failure_gate + 1),
+        race_gates=repair_race_gates(failure_gate),
         random_start_frac=0.0,
         spawn_at_rest=True,
         max_episode_s=4.0,
@@ -90,7 +93,10 @@ def collect_family(
         dr_drag=(0.22, 0.34),
     )
     arrays, fixed = load_live_teacher_config(
-        teacher_config, worlds, map_path=map_path
+        teacher_config,
+        worlds,
+        gate_count=repair_race_gates(failure_gate),
+        map_path=map_path,
     )
     gate_count = arrays["action_leads"].shape[1]
     offsets = arrays.setdefault(
