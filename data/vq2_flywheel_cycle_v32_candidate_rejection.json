@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "cycle": "v32-candidate-rejection",
+  "date": "2026-08-02",
+  "protected_official_time_s": 36.826946258,
+  "live_session": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_143243",
+  "live_results": {
+    "episodes": 16,
+    "timing_healthy": 16,
+    "candidate_episodes": 8,
+    "candidate_finishes": 0,
+    "candidate_failures": {
+      "gate_5": 5,
+      "gate_6": 2,
+      "gate_16": 1
+    },
+    "champion_episodes": 8,
+    "champion_finishes": 3,
+    "champion_official_times_s": [
+      36.872962951000005,
+      37.052246093,
+      36.909877777000005
+    ]
+  },
+  "candidate_controller_config_sha256": "02ec584de5ddae0d7484f806ee92239e098337865aee5815371be8bbd70d6cc0",
+  "champion_controller_config_sha256": "158702f1558e54a0a7ca3153f57429701b7c56c1cffe9864053b8bb8abe6a479",
+  "primary_actor_sha256": "c4b3ca2cbcae0741b25ee38c52a668f55bf11d40465da2f243c7076459fcc0be",
+  "secondary_actor_sha256": "22712c6a4753fffbc123a1ff4900ef58e84d89cd1f1e65c3f6d3dfa8c12572eb",
+  "candidate_decision": "rejected_no_finish_and_gate_5_6_regression",
+  "canonical_manifest": {
+    "path": "D:\\ai-gp\\corpus_manifests\\vq2_canonical_20260802_1611.json",
+    "sha256": "9753d8e4ebe5c8bfc7387d54a05dfc75f41a8475111eaf9433834b2f4affac34",
+    "entries": 10120
+  },
+  "split_registry": {
+    "path": "D:\\ai-gp\\corpus_manifests\\vq2_splits_v5.json",
+    "sha256": "e0841df84940e1b0b67f46f7a2e1d503ba5a1bfc2aa1e70f32f61002409e782e",
+    "generation": 5
+  },
+  "dataset": {
+    "name": "g0g16_master_currentera_v32_registry",
+    "manifest_sha256": "1c082b39427f85df7995176ed9e8bb65c7592a984cce29eeb1011d7f3c9acafa",
+    "train_transitions": 219652,
+    "validation_transitions": 20475,
+    "policy_selection_transitions": 10250
+  },
+  "world_model": {
+    "name": "v32_allgate_registry_flywheel",
+    "initialization": "v30_allgate_registry_flywheel",
+    "status": "queued_on_gipsydanger_waiting_for_sustained_idle_window",
+    "audit_pool": "g0g16_allera_registry_audit_v2"
+  },
+  "next": "audit v32, then train a gate-5/6-scoped challenger from matched healthy outcomes; do not refly the rejected offset candidate"
+}

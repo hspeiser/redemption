@@ -1,6 +1,24 @@
 # VQ2 live-data flywheel status
 
-Updated 2026-08-02 after cycle `live36-v31-corrected-abba`.
+Updated 2026-08-02 during cycle `v32-candidate-rejection`.
+
+## Current v32 cycle
+
+The 16-flight autonomous ABBA block at
+`D:\ai-gp\training\vq2_full17_fastprefix_abba_v1\20260802_143243`
+completed with all 16 episodes timing-healthy. The protected champion finished
+3/8 times at 36.872963 s, 37.052246 s, and 36.909878 s. The offset candidate
+finished 0/8 times: five failures at gate 5, two at gate 6, and one at gate
+16. The candidate is rejected and must not be flown again unchanged.
+
+The run was ingested into immutable split registry v5. The current-era v32
+dataset contains 219,652 healthy training transitions, up 9,469 from v31,
+while the frozen validation and policy-selection pools remain unchanged at
+20,475 and 10,250 transitions. A five-member v32 update initialized from the
+globally stronger v30 model is staged on Gipsydanger. Its supervisor waits for
+a sustained idle window so it cannot contend with the independent
+control-proof campaign, then runs training and the frozen v25/v28/v30/v32
+audit automatically. The dashboard mirrors this remote state.
 
 ## Protected outcome
 
