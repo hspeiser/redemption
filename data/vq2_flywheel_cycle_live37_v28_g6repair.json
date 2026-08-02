@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "cycle": "live37-v28-g6repair",
+  "date": "2026-08-02",
+  "protected_official_time_s": 36.999767303,
+  "split_registry_sha256": "60465cebaa8bb114cef17f0ec02032e9b83aedd18b764d49ac3cbe19e898be5c",
+  "world_model": {
+    "name": "v28_allgate_registry_flywheel",
+    "sha256": "7df27fc6d052761ee00dd5f8b1fd502f5d4a9ae1163c65827ff93e12865fc001",
+    "decision": "retain_in_pool_not_replacement",
+    "audit_horizon_steps": 32,
+    "audit_starts": 27327,
+    "v25_position_median_m": 0.3471139669418335,
+    "v28_position_median_m": 0.31662583351135254,
+    "v25_position_p90_m": 0.7801100730895998,
+    "v28_position_p90_m": 0.7411665558815006,
+    "v25_attitude_median_deg": 0.5369978547096252,
+    "v28_attitude_median_deg": 0.6047989130020142
+  },
+  "policy_candidates": {
+    "gate5_recurrent_iql": "rejected_validation_no_improvement",
+    "gate10_recurrent_iql": "rejected_validation_no_improvement"
+  },
+  "repairs": {
+    "gate5": "rejected_model_family_reproduction_disagreement",
+    "gate6_action": {
+      "accepted": false,
+      "worst_family_fresh_success": 0.626953125,
+      "report_sha256": "d727142aa2773adf88aecb496065d03210193b7e987673387dd37b9a927276aa"
+    },
+    "gate6_geometry": {
+      "accepted": false,
+      "worst_family_fresh_success": 0.65234375,
+      "minimum_clearance_p10_m": 0.1960889995098114,
+      "diagnostic_lateral_offset_m": 0.10555826818271583,
+      "diagnostic_vertical_offset_m": -0.040868233804386395,
+      "diagnostic_speed_scale": 0.9840373150991484,
+      "report_sha256": "6b252fb1797c05794441013eae24fa8d9f40e3222c80ff8bc160f0a0a2735f5e"
+    }
+  },
+  "live_candidate_created": false,
+  "live_flight_performed": false
+}
