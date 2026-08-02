@@ -1,6 +1,6 @@
 # VQ2 live-data flywheel status
 
-Updated 2026-08-02 after cycle `live36-v30-g5g6`.
+Updated 2026-08-02 after cycle `live36-v31-corrected-abba`.
 
 ## Protected outcome
 
@@ -30,16 +30,29 @@ made them useful session-health controls, but not valid comparisons against the
 new hybrid champion. The launcher and trainer now preserve residual actors for
 hybrid protected champions.
 
+The corrected hybrid-champion A/B then ran in
+`D:\ai-gp\training\vq2_full17_fastprefix_abba_v1\20260802_133233`.
+All four flights were timing-healthy. The two candidate arms produced one
+official 36.959781646 s finish and one gate-16 collision; the protected arms
+failed at gates 3 and 2. An earlier attempt at `20260802_133048` contributed
+one healthy protected gate-9 failure; its candidate gate-0 crash was rejected
+for a 202 ms simulator-step p95 and triggered the automatic timing abort.
+
+Across all timing-healthy offset-candidate flights so far, the diagnostic is
+3/9 for full finishes. It remains compatible with the complete course and is
+retained for training, but the control-arm variance and sample size are not
+sufficient for promotion over the 36.826946258 s champion.
+
 ## Data and split layer
 
-- Canonical corpus manifest: 10,110 indexed artifacts.
+- Canonical corpus manifest: 10,116 indexed artifacts.
 - Immutable split registry SHA-256:
-  `b6f835c5085d29125f50468d8ab1dd2dedd843b8bf19273531a03ae562765336`.
+  `43f59c34c18fc9fac8d8c2211811a2587b0fdd682325ff6d60080a11251933ab`.
 - The world-model builder now consumes that registry. Known final-test
   sessions are excluded from routine training and selection; newly collected
   sessions are train-only until a new registry generation is explicitly
   created.
-- Current-era v30 training corpus: 207,087 timing-healthy real transitions.
+- Current-era v31 training corpus: 210,183 timing-healthy real transitions.
 - Broader untouched audit corpus: 44,693 validation and 30,823
   policy-selection transitions, covering gates 0-16.
 - The builder now rejects an explicit episode-level timing quarantine before
@@ -65,6 +78,19 @@ On 26,887 identical untouched 32-step starts:
 Decision: use v25, v28, and v30 as independent pooled audit families. v30 is
 the strongest translational model, while v25 preserves a useful
 attitude-strong disagreement family. None is used for live inference.
+
+## World model v31
+
+Artifact SHA-256:
+`2816713b25ed2d48f6f98cb294a8038761350dfa6b7bba52f8e91a3f93e9708d`.
+
+On the same 26,887 untouched 32-step starts, v31 recorded 0.316907 m median
+and 0.741089 m p90 position error, 0.305461 m/s median and 0.699041 m/s p90
+velocity error, and 0.585096 / 1.819955 degree median/p90 attitude error.
+Compared with v30, it improves median translation slightly (including gate 6:
+0.331543 m to 0.324380 m) while slightly worsening overall position p90 and
+attitude. Decision: archive v31 as a gate-focused disagreement model; retain
+v25/v28/v30 as the trusted global audit pool. It is not used live.
 
 ## Real-data policy attempts
 

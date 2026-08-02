@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "cycle": "live36-v31-corrected-abba",
+  "date": "2026-08-02",
+  "protected_official_time_s": 36.826946258,
+  "protected_artifact": "D:\\ai-gp\\champions\\vq2_36s_20260802",
+  "live_sessions": [
+    {
+      "path": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_133048",
+      "healthy_episodes": 1,
+      "quarantined_episodes": 1,
+      "decision": "automatic_timing_abort"
+    },
+    {
+      "path": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_133233",
+      "healthy_episodes": 4,
+      "candidate_finishes": 1,
+      "candidate_finish_official_s": 36.959781646,
+      "candidate_other_result": "gate_16_collision",
+      "champion_results": ["gate_3_collision", "gate_2_collision"]
+    }
+  ],
+  "candidate_offsets_m": {
+    "gate_5_lateral": 0.1,
+    "gate_6_lateral": -0.1
+  },
+  "candidate_all_healthy_finishes": 3,
+  "candidate_all_healthy_episodes": 9,
+  "candidate_promoted": false,
+  "canonical_manifest_sha256": "8b6bb11f55742a09ce31072ea55b104a2d1f011c2e29d868e3ef2af80bec0817",
+  "split_registry_sha256": "43f59c34c18fc9fac8d8c2211811a2587b0fdd682325ff6d60080a11251933ab",
+  "train_transitions": 210183,
+  "world_model": {
+    "name": "v31_allgate_registry_flywheel",
+    "sha256": "2816713b25ed2d48f6f98cb294a8038761350dfa6b7bba52f8e91a3f93e9708d",
+    "audit_sha256": "12ec567ea8089e585282ae6b88c672a6b71897f173b3d238fcd3da75360508ed",
+    "audit_starts": 26887,
+    "audit_horizon_steps": 32,
+    "position_median_m": 0.31690728664398193,
+    "position_p90_m": 0.7410892605781555,
+    "velocity_median_mps": 0.3054612874984741,
+    "velocity_p90_mps": 0.6990414023399356,
+    "attitude_median_deg": 0.5850963592529297,
+    "attitude_p90_deg": 1.8199550867080692,
+    "decision": "archive_gate_focused_disagreement_keep_v25_v28_v30_global_pool"
+  },
+  "hand_labels_required": false
+}
