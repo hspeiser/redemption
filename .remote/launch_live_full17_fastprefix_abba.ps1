@@ -12,7 +12,9 @@ param(
     [string]$ReferenceLateralOffsets = '0:0,1:0.300000012,2:0.0878505111,3:-0.3,4:0.45',
     [string]$GateCenterFunnelGates = '3,5,8',
     [string]$Sequence = 'protected_champion,candidate,candidate,protected_champion',
-    [double]$OfficialReleaseMarginMs = 20.0,
+    # Live-validated on 2026-08-02: -500 ms was rejected, while a measured
+    # -142 ms release completed and was accepted by the qualifier UI.
+    [double]$OfficialReleaseMarginMs = -150.0,
     [switch]$DryRun
 )
 
