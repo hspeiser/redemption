@@ -54,4 +54,3 @@ def test_pipeline_dashboard_filters_timing_and_reports_record(tmp_path):
     assert snapshot["metrics"][5]["value"] == 0.4
     assert snapshot["gate_failures"] == [{"gate": "Gate 6", "count": 1}]
     assert len(snapshot["timeline"]) == 1
-
