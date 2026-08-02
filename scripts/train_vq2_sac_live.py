@@ -3666,8 +3666,9 @@ def parse_args():
         default=-1.0,
         help=(
             "Predict the scheduled simulator start from pending race-status "
-            "packets and release this many ms afterward; negative waits for "
-            "the first authoritative active packet."
+            "packets and release this many ms afterward. Exactly -1 waits "
+            "for the first authoritative active packet; values below -1 "
+            "intentionally release before the scheduled start."
         ),
     )
     parser.add_argument(

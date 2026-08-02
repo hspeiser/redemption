@@ -53,11 +53,11 @@ class VQ2EnvConfig:
     # work without risking an official early-start DQ.
     wait_for_official_start: bool = True
     race_start_timeout_s: float = 15.0
-    # Negative keeps the historical packet-authoritative release.  A
-    # non-negative value projects the simulator boot clock forward from the
-    # newest pending RACE_STATUS packet and releases this many milliseconds
-    # after the scheduled start.  This removes network delivery latency from
-    # official lap time without intentionally starting early.
+    # Exactly -1 keeps the historical packet-authoritative release. Any other
+    # value projects the simulator boot clock forward from the newest pending
+    # RACE_STATUS packet and releases at race_start_ms + margin. Positive
+    # values start after the clock; negative values intentionally test an
+    # early release (which may be disqualified by the simulator).
     official_release_margin_ms: float = -1.0
     anchor_timeout_s: float = 0.75
     # Hard-reset if the official gate index has not advanced for this much
@@ -273,7 +273,7 @@ class VQ2LiveEnv:
                     f"invalid VQ2 race status during countdown: {status}"
                 )
             margin_ms = float(self.config.official_release_margin_ms)
-            if margin_ms >= 0.0 and int(status["race_start_ms"]) >= 0:
+            if margin_ms != -1.0 and int(status["race_start_ms"]) >= 0:
                 packet_age_ms = max(
                     0.0, (time.time_ns() - int(status["wall_ns"])) * 1e-6
                 )
