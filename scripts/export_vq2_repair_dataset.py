@@ -72,7 +72,7 @@ def collect_family(
     total_steps = max(tail_steps + post_steps, len(knots_np))
     cfg = FastEnvConfig(
         n_envs=worlds,
-        race_gates=5,
+        race_gates=max(5, failure_gate + 1),
         random_start_frac=0.0,
         spawn_at_rest=True,
         max_episode_s=4.0,

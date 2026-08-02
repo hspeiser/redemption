@@ -53,7 +53,10 @@ def reproduce(
 ) -> dict:
     cfg = FastEnvConfig(
         n_envs=worlds,
-        race_gates=5,
+        # Counterfactual repair originally targeted gates 0-4.  Keeping this
+        # hard-coded at five makes any branch already targeting gate 5+ end
+        # immediately as a wrong terminal on its first simulated step.
+        race_gates=max(5, failure_target_gate + 1),
         random_start_frac=0.0,
         spawn_at_rest=True,
         max_episode_s=3.0,

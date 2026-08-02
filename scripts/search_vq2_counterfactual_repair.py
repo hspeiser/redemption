@@ -121,7 +121,7 @@ def evaluate_model(
     table = torch.as_tensor(values, dtype=torch.float32, device=device)
     cfg = FastEnvConfig(
         n_envs=n,
-        race_gates=5,
+        race_gates=max(5, failure_target_gate + 1),
         random_start_frac=0.0,
         spawn_at_rest=True,
         max_episode_s=4.0,
