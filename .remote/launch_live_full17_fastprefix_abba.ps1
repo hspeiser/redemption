@@ -13,6 +13,8 @@ param(
     [string]$ReferenceLateralOffsets = '0:0,1:0.300000012,2:0.0878505111,3:-0.3,4:0.45,5:0.10,6:-0.10',
     [string]$GateCenterFunnelGates = '3,5,8',
     [string]$Sequence = 'protected_champion,candidate,candidate,protected_champion',
+    [ValidateRange(1, 10)]
+    [int]$TimingFailureLimit = 2,
     # Live-validated on 2026-08-02: -500 ms was rejected, while a measured
     # -142 ms release completed and was accepted by the qualifier UI.
     [double]$OfficialReleaseMarginMs = -150.0,
@@ -94,7 +96,7 @@ $arguments = @(
     '--override', 'max_episode_sim_step_p95=0.055',
     '--override', 'max_episode_sim_step_max=0.30',
     '--override', 'max_episode_step_p95_ms=60.0',
-    '--override', 'timing_failure_limit=1'
+    '--override', "timing_failure_limit=$TimingFailureLimit"
 )
 
 if ($DryRun) {
@@ -121,6 +123,7 @@ if ($DryRun) {
         one_process = $true
         simulator_restart = $false
         strict_timing_abort = $true
+        timing_failure_limit = $TimingFailureLimit
     } | ConvertTo-Json -Depth 6
     exit 0
 }

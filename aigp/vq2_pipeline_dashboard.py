@@ -134,6 +134,7 @@ class PipelineScanner:
     def _state_machine(
         self,
         latest_episode_mtime: float | None,
+        live_activity_mtime: float | None,
         registry: Path | None,
         model: Path | None,
         audit: Path | None,
@@ -147,9 +148,9 @@ class PipelineScanner:
         if explicit_time is not None and now - explicit_time < 180:
             active = str(explicit.get("active_stage", "")).lower() or None
             detail = explicit.get("message")
-        elif latest_episode_mtime is not None and now - latest_episode_mtime < 8:
+        elif live_activity_mtime is not None and now - live_activity_mtime < 15:
             active = "collect"
-            detail = "A live episode log is receiving new transitions."
+            detail = "A live flight is writing synchronized transitions."
 
         commit_time = self._git_commit_time()
         artifacts = {
@@ -332,8 +333,20 @@ class PipelineScanner:
         latest_episode_mtime = max(
             (_finite(row.get("_mtime")) for row in episodes), default=None
         )
+        activity_paths = list(self.training_root.rglob("steps.jsonl"))
+        activity_mtimes = [
+            path.stat().st_mtime
+            for path in activity_paths
+            if path.is_file()
+        ]
+        live_activity_mtime = max(
+            [value for value in [latest_episode_mtime, *activity_mtimes]
+             if value is not None],
+            default=None,
+        )
         overall_state, stages = self._state_machine(
-            latest_episode_mtime, registry, model, audit, ledger
+            latest_episode_mtime, live_activity_mtime,
+            registry, model, audit, ledger
         )
         return {
             "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),

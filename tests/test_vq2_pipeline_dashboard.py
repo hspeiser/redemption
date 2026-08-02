@@ -1,4 +1,6 @@
 import json
+import os
+import time
 from pathlib import Path
 
 from aigp.vq2_pipeline_dashboard import PipelineScanner
@@ -54,3 +56,30 @@ def test_pipeline_dashboard_filters_timing_and_reports_record(tmp_path):
     assert snapshot["metrics"][5]["value"] == 0.4
     assert snapshot["gate_failures"] == [{"gate": "Gate 6", "count": 1}]
     assert len(snapshot["timeline"]) == 1
+
+
+def test_pipeline_dashboard_detects_in_progress_step_writes(tmp_path):
+    repo = tmp_path / "repo"
+    data = tmp_path / "data"
+    run = data / "training" / "campaign" / "20260802_120000"
+    run.mkdir(parents=True)
+    episodes = run / "episodes.jsonl"
+    episodes.write_text(
+        json.dumps({"episode": 0, "timing_healthy": True,
+                    "gate_reached": 3, "failure": "collision"}) + "\n",
+        encoding="utf-8",
+    )
+    old = time.time() - 60
+    os.utime(episodes, (old, old))
+    (run / "steps.jsonl").write_text("{}\n", encoding="utf-8")
+
+    snapshot = PipelineScanner(
+        repo=repo,
+        data_root=data,
+        training_root=data / "training",
+        worldmodel_root=data / "worldmodel",
+        manifest_root=data / "corpus_manifests",
+    ).snapshot()
+
+    assert snapshot["pipeline_state"] == "Running: Collect flights"
+    assert snapshot["stages"][0]["status"] == "active"
