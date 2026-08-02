@@ -1,5 +1,9 @@
 import numpy as np
 
+from scripts.build_vq2_master_worldmodel_dataset import (
+    load_split_registry,
+    session_split,
+)
 from scripts.build_vq2_policy_sequence_dataset import (
     n_step_targets,
     segment_bounds,
@@ -20,6 +24,31 @@ def test_split_registry_links_raw_and_training_timestamp():
     }
     assert group_key(training) == group_key(raw) == "local:20260802_110754"
     assert initial_split(group_key(training)) == initial_split(group_key(raw))
+
+
+def test_worldmodel_builder_uses_immutable_registry(tmp_path):
+    session = tmp_path / "training" / "campaign" / "20260802_110754"
+    registry_path = tmp_path / "splits.json"
+    registry_path.write_text(
+        '{"generation": 3, "groups": ['
+        '{"split": "policy_selection", "paths": ['
+        f'"{str(session).replace(chr(92), chr(92) * 2)}"]}}]}}'
+    )
+    assignments, payload = load_split_registry(registry_path)
+    assert payload["generation"] == 3
+    assert session_split(session, assignments) == "test"
+    assert session_split(tmp_path / "new_session", assignments) == "train"
+
+
+def test_worldmodel_builder_keeps_final_test_frozen(tmp_path):
+    session = tmp_path / "final"
+    registry_path = tmp_path / "splits.json"
+    registry_path.write_text(
+        '{"groups": [{"split": "final_test", "paths": ['
+        f'"{str(session).replace(chr(92), chr(92) * 2)}"]}}]}}'
+    )
+    assignments, _ = load_split_registry(registry_path)
+    assert session_split(session, assignments) == "final_test"
 
 
 def test_segment_bounds_keeps_context_and_next_gate_entry():

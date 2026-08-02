@@ -37,7 +37,37 @@ def stable_fraction(text: str) -> float:
     return value / float(16 ** 16)
 
 
-def session_split(path: Path) -> str:
+def normalized_path(path: str | Path) -> str:
+    return str(path).replace("/", "\\").rstrip("\\").lower()
+
+
+def load_split_registry(path: Path) -> tuple[dict[str, str], dict]:
+    payload = json.loads(path.read_text())
+    assignments: dict[str, str] = {}
+    for group in payload.get("groups", []):
+        split = str(group.get("split", ""))
+        if split not in {"train", "validation", "policy_selection", "final_test"}:
+            raise ValueError(f"invalid registry split {split!r}")
+        for source_path in group.get("paths", []):
+            key = normalized_path(source_path)
+            previous = assignments.get(key)
+            if previous is not None and previous != split:
+                raise ValueError(
+                    f"split registry assigns {source_path!r} to both "
+                    f"{previous!r} and {split!r}"
+                )
+            assignments[key] = split
+    return assignments, payload
+
+
+def session_split(path: Path, registry: dict[str, str] | None = None) -> str:
+    if registry is not None:
+        registered = registry.get(normalized_path(path))
+        if registered is None:
+            return "train"
+        if registered == "policy_selection":
+            return "test"
+        return registered
     lowered = str(path).lower()
     if "interleave_" in lowered or "schedule_v3_counterexample" in lowered:
         return "test"
@@ -217,6 +247,13 @@ def main() -> int:
             "has this basename"
         ),
     )
+    parser.add_argument(
+        "--split-registry", type=Path,
+        help=(
+            "immutable session split registry; known final_test sessions are "
+            "excluded and newly collected sessions are train-only"
+        ),
+    )
     args = parser.parse_args()
     gates = json.loads(args.map.read_text())["gates"]
     gate_positions = np.asarray([gate["pos"] for gate in gates], np.float64)
@@ -253,6 +290,12 @@ def main() -> int:
                 != args.require_primary_basename):
             continue
         logs.append(log)
+    registry_assignments = None
+    registry_payload = None
+    if args.split_registry is not None:
+        registry_assignments, registry_payload = load_split_registry(
+            args.split_registry
+        )
     split_chunks: dict[str, dict[str, list[np.ndarray]]] = {
         name: defaultdict(list) for name in ("train", "validation", "test")
     }
@@ -261,7 +304,11 @@ def main() -> int:
     global_episode = 0
     skipped = Counter()
     for session_id, log in enumerate(logs):
-        split = session_split(log.parent)
+        source_split = session_split(log.parent, registry_assignments)
+        if source_split == "final_test":
+            skipped["frozen_final_test_session"] += 1
+            continue
+        split = source_split
         rows = summaries(log)
         session_rows = session_episodes = 0
         for episode, summary in sorted(rows.items()):
@@ -291,6 +338,10 @@ def main() -> int:
                 "session_id": session_id,
                 "path": str(log.parent),
                 "split": split,
+                "registry_split": (
+                    registry_assignments.get(normalized_path(log.parent))
+                    if registry_assignments is not None else None
+                ),
                 "episodes": session_episodes,
                 "transitions": session_rows,
             })
@@ -338,6 +389,17 @@ def main() -> int:
         "sessions": manifest_sessions,
         "position_label": "logged post-step localizer position",
         "split_policy": "whole sessions; interleaved/counterexample probes frozen test",
+        "split_registry": (
+            {
+                "path": str(args.split_registry.resolve()),
+                "sha256": file_hash(args.split_registry),
+                "generation": registry_payload.get("generation"),
+                "new_session_policy": "train",
+                "policy_selection_mapping": "test",
+                "final_test_policy": "excluded",
+            }
+            if args.split_registry is not None else None
+        ),
         "balance_policy": "outcome x speed x action-change; no gate identity",
         "era_filter": {
             "vision_hz": args.require_vision_hz,
