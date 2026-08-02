@@ -669,6 +669,7 @@ class VQ2SACLearner:
                 parameter.requires_grad_(False)
         self.recurrent_residual = None
         self.recurrent_residual_hidden = None
+        self.recurrent_residual_gates: set[int] = set()
         if "recurrent_residual_actor" in payload:
             recurrent_metadata = payload.get("recurrent_residual", {})
             self.recurrent_residual = RecurrentActor(
@@ -679,6 +680,12 @@ class VQ2SACLearner:
             self.recurrent_residual.load_state_dict(
                 payload["recurrent_residual_actor"]
             )
+            self.recurrent_residual_gates = {
+                int(gate) for gate in recurrent_metadata.get(
+                    "gates", range(N_RACE_GATES)
+                )
+                if 0 <= int(gate) < N_RACE_GATES
+            }
             for parameter in self.recurrent_residual.parameters():
                 parameter.requires_grad_(False)
 
@@ -1643,7 +1650,10 @@ class VQ2SACLearner:
             )
             self.last_counterfactual_gate_score = 0.0
             self.last_counterfactual_gate_active = False
-        elif self.recurrent_residual is not None:
+        elif (
+            self.recurrent_residual is not None
+            and event_gate_index in self.recurrent_residual_gates
+        ):
             residual_mean, self.recurrent_residual_hidden = (
                 self.recurrent_residual.step(
                     tensor, self.recurrent_residual_hidden
