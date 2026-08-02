@@ -95,7 +95,36 @@ def main() -> int:
         cfg.dr_drag = (0.3, 0.3)
         cfg.act_delay_steps_max = 0
     model = SurrogateModel.load(args.model)
-    demo = dict(np.load(args.demo_npz)) if args.demo_npz else None
+    demo = None
+    if args.demo_npz:
+        raw_demo = dict(np.load(args.demo_npz, allow_pickle=False))
+        if {"position", "velocity", "observation", "gate_index"} <= raw_demo.keys():
+            # Live-training demos use descriptive field names and encode the
+            # body-to-course attitude as the first two rotation columns in
+            # the 53-D observation.  FastVQ2Env expects compact truth-state
+            # keys.  Convert only those numeric arrays instead of forwarding
+            # string metadata (source_episode/source_trace) into torch.
+            from scipy.spatial.transform import Rotation
+
+            observation = np.asarray(raw_demo["observation"], np.float32)
+            first = observation[:, 21:24].astype(np.float64)
+            first /= np.linalg.norm(first, axis=1, keepdims=True) + 1e-9
+            second = observation[:, 24:27].astype(np.float64)
+            second -= first * np.sum(first * second, axis=1, keepdims=True)
+            second /= np.linalg.norm(second, axis=1, keepdims=True) + 1e-9
+            third = np.cross(first, second)
+            matrix = np.stack([first, second, third], axis=2)
+            quat_xyzw = Rotation.from_matrix(matrix).as_quat()
+            demo = {
+                "pos": np.asarray(raw_demo["position"], np.float32),
+                "vel": np.asarray(raw_demo["velocity"], np.float32),
+                "quat": np.asarray(
+                    quat_xyzw[:, [3, 0, 1, 2]], np.float32
+                ),
+                "gate": np.asarray(raw_demo["gate_index"], np.float32),
+            }
+        else:
+            demo = raw_demo
     backbone = None
     if args.residual:
         from aigp.fastsim.refctl import load_winner_backbone
@@ -112,9 +141,18 @@ def main() -> int:
     actor = GaussianActor(OBS_DIM, ACT_DIM).to(device)
     actor.load_state_dict(ck["actor"])
     actor.eval()
-    obs_mean = ck["obs_mean"].to(device)
-    obs_var = ck["obs_var"].to(device)
-    print(f"checkpoint iter {ck.get('iter')}")
+    if ck.get("kind") == "vq2_residual_sac":
+        obs_mean = torch.as_tensor(
+            ck["observation_mean"], device=device
+        )
+        obs_scale = torch.as_tensor(
+            ck["observation_std"], device=device
+        ).clamp_min(1e-6)
+        print(f"SAC checkpoint updates {ck.get('updates')}")
+    else:
+        obs_mean = ck["obs_mean"].to(device)
+        obs_scale = torch.sqrt(ck["obs_var"].to(device) + 1e-6)
+        print(f"checkpoint iter {ck.get('iter')}")
 
     n = args.n_envs
     finished = torch.zeros(n, dtype=torch.bool, device=device)
@@ -129,7 +167,7 @@ def main() -> int:
     with torch.no_grad():
         for _step in range(args.max_steps):
             o = torch.clamp(
-                (obs - obs_mean) / torch.sqrt(obs_var + 1e-6), -8, 8
+                (obs - obs_mean) / obs_scale, -8, 8
             )
             act = actor.deterministic(o)
             obs, _r, done, info = env.step(act)

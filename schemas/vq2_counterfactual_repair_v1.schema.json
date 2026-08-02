@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aigp.local/schemas/vq2_counterfactual_repair_v1.schema.json",
+  "title": "VQ2 counterfactual repair artifact",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_id",
+    "created_utc",
+    "source",
+    "identity",
+    "classification",
+    "snapshots",
+    "payload",
+    "synthetic_repair"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "artifact_id": {"type": "string", "minLength": 16},
+    "created_utc": {"type": "string", "format": "date-time"},
+    "synthetic_repair": {"const": false},
+    "source": {
+      "type": "object",
+      "required": ["session", "episode", "run_dir", "episode_npz_sha256"],
+      "properties": {
+        "session": {"type": "string"},
+        "episode": {"type": "integer", "minimum": 0},
+        "run_dir": {"type": "string"},
+        "episode_npz_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "matching_success_episode": {"type": ["integer", "null"]}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": ["config_sha256", "map_sha256", "world_model_sha256"],
+      "properties": {
+        "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "map_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "world_model_sha256": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        },
+        "calibration_report_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "required": ["terminal_cause", "target_gate", "timing_healthy", "eligible"],
+      "properties": {
+        "terminal_cause": {"type": ["string", "null"]},
+        "target_gate": {"type": "integer", "minimum": 0, "maximum": 16},
+        "timing_healthy": {"type": "boolean"},
+        "eligible": {"type": "boolean"},
+        "rejection_reasons": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "snapshots": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["rollback_steps", "rollback_s", "branch_step", "target_gate"],
+        "properties": {
+          "rollback_steps": {"type": "integer", "minimum": 1},
+          "rollback_s": {"type": "number", "exclusiveMinimum": 0},
+          "branch_step": {"type": "integer", "minimum": 0},
+          "target_gate": {"type": "integer", "minimum": 0, "maximum": 16},
+          "position_sigma_m": {"type": ["number", "null"]},
+          "landmark_age_s": {"type": ["number", "null"]}
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "required": ["file", "sha256", "action_order", "state_source"],
+      "properties": {
+        "file": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "action_order": {"const": ["roll_rate", "pitch_rate", "yaw_rate", "thrust"]},
+        "state_source": {"enum": ["localizer_belief_proxy", "privileged_truth"]}
+      }
+    }
+  }
+}

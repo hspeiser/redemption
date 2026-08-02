@@ -22,7 +22,14 @@ _BUF = 4_000_000
 
 
 class MavIO:
-    def __init__(self, ip="127.0.0.1", port=14550, timesync_hz=5.0):
+    def __init__(
+        self,
+        ip="127.0.0.1",
+        port=14550,
+        timesync_hz=5.0,
+        on_record=None,
+    ):
+        self.on_record = on_record
         self.conn = mavutil.mavlink_connection(f"udpin:{ip}:{port}")
         print("Waiting for heartbeat...", flush=True)
         self.conn.wait_heartbeat()
@@ -44,6 +51,7 @@ class MavIO:
         self.actuator = deque(maxlen=_BUF)
         # (wall_ns, collision_id, threat_level, impulse)
         self.collisions = deque(maxlen=100_000)
+        self.ignored_ground_contacts = 0
         # (wall_ns, tc1, ts1)
         self.timesync_msgs = deque(maxlen=1_000_000)
         # (wall_ns, sim_boot_ms, race_start_ms, race_finish_ns, active_gate, last_gate_time)
@@ -59,6 +67,8 @@ class MavIO:
         self._track_expected = {}
 
         self.running = True
+        self.rx_failure = None
+        self.rx_connection_resets = 0
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
         self._rx_thread.start()
         self._ts_thread = threading.Thread(
@@ -73,13 +83,42 @@ class MavIO:
             try:
                 msg = self.conn.recv_match(blocking=False)
             except ConnectionResetError:
-                print("WARNING: MAVLink ConnectionResetError; rx stopped", flush=True)
+                # Windows reports WSAECONNRESET on a UDP listener when the
+                # simulator briefly closes/reopens its peer during reset.
+                # This is transient and must not permanently kill telemetry.
+                self.rx_connection_resets += 1
+                print(
+                    "WARNING: transient MAVLink ConnectionResetError; "
+                    "continuing RX",
+                    flush=True,
+                )
+                time.sleep(0.01)
+                continue
+            except Exception as error:
+                self.rx_failure = repr(error)
+                print(
+                    f"ERROR: MAVLink RX stopped: {self.rx_failure}",
+                    flush=True,
+                )
                 return
             if msg is None:
                 time.sleep(0.0005)
                 continue
             wall = time.time_ns()
             t = msg.get_type()
+            if self.on_record is not None:
+                try:
+                    self.on_record(
+                        "mavlink_rx",
+                        wall,
+                        t,
+                        bytes(msg.get_msgbuf()),
+                    )
+                except Exception as error:
+                    print(
+                        f"WARNING: MAVLink record callback failed: {error!r}",
+                        flush=True,
+                    )
             if t == "ODOMETRY":
                 # Quat convention fix: sim emits Y-flipped left-handed quats
                 # (Unreal). Correct body->world reading = (w, -x, y, -z).
@@ -112,11 +151,33 @@ class MavIO:
                     msg.actuator[2], msg.actuator[3], wall,
                 ))
             elif t == "COLLISION":
-                self.collisions.append((
-                    wall, msg.id, msg.threat_level, msg.horizontal_minimum_delta,
-                ))
-                print(f"COLLISION id={msg.id} threat={msg.threat_level} "
-                      f"impulse={msg.horizontal_minimum_delta:.2f}", flush=True)
+                # This is the simulator's normal resting-pad/ground-contact
+                # chatter.  The environment deliberately does not treat it as
+                # a crash, and retaining it at ~144 Hz needlessly contends
+                # with the IMU receiver and grows the history scanned by the
+                # control loop.
+                if (
+                    msg.id == 1002
+                    and msg.threat_level == 1
+                    and msg.horizontal_minimum_delta < 0.20
+                ):
+                    self.ignored_ground_contacts += 1
+                    continue
+                with self.lock:
+                    self.collisions.append((
+                        wall, msg.id, msg.threat_level,
+                        msg.horizontal_minimum_delta,
+                    ))
+                if (
+                    msg.threat_level >= 2
+                    or msg.horizontal_minimum_delta >= 0.20
+                ):
+                    print(
+                        f"COLLISION id={msg.id} "
+                        f"threat={msg.threat_level} "
+                        f"impulse={msg.horizontal_minimum_delta:.2f}",
+                        flush=True,
+                    )
             elif t == "TIMESYNC":
                 self.timesync_msgs.append((wall, msg.tc1, msg.ts1))
             elif t == "HEARTBEAT":
@@ -126,6 +187,14 @@ class MavIO:
             elif t == "DATA_TRANSMISSION_HANDSHAKE":
                 self._track_expected[msg.width] = msg.packets
                 self._track_chunks[msg.width] = {}
+
+    @property
+    def receiver_alive(self) -> bool:
+        return (
+            self.running
+            and self._rx_thread.is_alive()
+            and self.rx_failure is None
+        )
 
     def _on_encapsulated(self, msg, wall):
         raw = bytes(msg.data)
@@ -167,7 +236,30 @@ class MavIO:
     # ------------------------------------------------------------------ TX
 
     def _log_send(self, kind, *params):
-        self.sent_log.append((time.time_ns(), kind, *(list(params) + [0.0] * (4 - len(params)))[:4]))
+        wall = time.time_ns()
+        self.sent_log.append((
+            wall,
+            kind,
+            *(list(params) + [0.0] * (4 - len(params)))[:4],
+        ))
+        if self.on_record is not None:
+            try:
+                self.on_record(
+                    "command_tx",
+                    wall,
+                    kind,
+                    [
+                        int(value)
+                        if isinstance(value, int)
+                        else float(value)
+                        for value in params
+                    ],
+                )
+            except Exception as error:
+                print(
+                    f"WARNING: command record callback failed: {error!r}",
+                    flush=True,
+                )
 
     def arm(self, arm=True):
         with self.send_lock:
@@ -212,7 +304,9 @@ class MavIO:
                 self.conn.target_system, self.conn.target_component,
                 mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE,
                 [1, 0, 0, 0], roll_rate, pitch_rate, yaw_rate, thrust)
-        self._log_send("rates", roll_rate, pitch_rate, yaw_rate)
+        self._log_send(
+            "rates", roll_rate, pitch_rate, yaw_rate, thrust
+        )
 
     _QUAT_MASK = (
         mavutil.mavlink.ATTITUDE_TARGET_TYPEMASK_BODY_ROLL_RATE_IGNORE
@@ -228,13 +322,22 @@ class MavIO:
                 self.conn.target_system, self.conn.target_component,
                 self._QUAT_MASK,
                 list(q_wxyz), 0, 0, 0, thrust)
-        self._log_send("att_quat", q_wxyz[0], q_wxyz[1], q_wxyz[2], q_wxyz[3])
+        self._log_send(
+            "att_quat",
+            q_wxyz[0],
+            q_wxyz[1],
+            q_wxyz[2],
+            q_wxyz[3],
+            thrust,
+        )
 
     def _timesync_loop(self, hz):
         while self.running:
             with self.send_lock:
                 try:
-                    self.conn.mav.timesync_send(time.time_ns(), 0)
+                    sent_ns = time.time_ns()
+                    self.conn.mav.timesync_send(sent_ns, 0)
+                    self._log_send("timesync", sent_ns, 0)
                 except Exception:
                     pass
             time.sleep(1.0 / hz)
@@ -265,6 +368,22 @@ class MavIO:
                     return self.gate_map
             time.sleep(0.1)
         return None
+
+    def collisions_since(self, wall_ns):
+        """Return an atomic snapshot of collision events after ``wall_ns``."""
+        with self.lock:
+            # Collision timestamps are append-ordered.  The simulator can emit
+            # harmless ground-contact packets at well over 100 Hz, so scanning
+            # the whole retained history on every control step eventually
+            # starves this receiver on the same lock.  Walk backward and stop
+            # as soon as we reach pre-episode history instead.
+            rows = []
+            for row in reversed(self.collisions):
+                if row[0] < wall_ns:
+                    break
+                rows.append(row)
+            rows.reverse()
+            return rows
 
     def close(self):
         self.running = False

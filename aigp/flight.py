@@ -49,8 +49,15 @@ class RateController:
         self.rate_limit = 4.0
         self.zi = 0.0  # z integrator for hover-thrust bias
 
-    def update(self, p, v, Rwb, p_ref, v_ref, yaw_des, dt):
+    def update(self, p, v, Rwb, p_ref, v_ref, yaw_des, dt, a_ref=None):
         a_cmd = self.kp * (p_ref - p) + self.kv * (v_ref - v)
+        if a_ref is not None:
+            # A trajectory's acceleration is feed-forward, not tracking
+            # error.  This matters when replaying the same spatial line on a
+            # shorter clock: velocity scales with k and acceleration with
+            # k^2.  Callers that only provide waypoints retain the historical
+            # zero-feed-forward behavior.
+            a_cmd += np.asarray(a_ref, float)
         self.zi = float(np.clip(self.zi + 0.6 * (p_ref[2] - p[2]) * dt, -3.0, 3.0))
         a_cmd[2] += self.zi
         # limit commanded acceleration

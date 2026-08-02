@@ -152,6 +152,30 @@ def _dense_corner_peaks(
     return snapped
 
 
+def _merge_corner_peaks(
+    left: list[list[tuple[float, float, float]]],
+    right: list[list[tuple[float, float, float]]],
+    dedupe_radius_px: float = 2.0,
+) -> list[list[tuple[float, float, float]]]:
+    """Union complementary GateNet peaks without duplicating one corner."""
+    merged = []
+    for left_class, right_class in zip(left, right, strict=True):
+        kept: list[tuple[float, float, float]] = []
+        for point in sorted(
+            [*left_class, *right_class],
+            key=lambda row: float(row[2]),
+            reverse=True,
+        ):
+            if all(
+                np.hypot(point[0] - other[0], point[1] - other[1])
+                > dedupe_radius_px
+                for other in kept
+            ):
+                kept.append(point)
+        merged.append(kept)
+    return merged
+
+
 def _dense_worker_main(
     request_queue,
     result_queue,
@@ -197,14 +221,30 @@ def _dense_worker_main(
                 len(models) > 2
                 and active_gate in gate_primary_gates
             )
-            peaks = _dense_corner_peaks(
-                request["image"],
-                models[2] if use_gate_primary else models[0],
-                models[1],
-                device,
-                threshold,
-                refine_radius_px,
+            ensemble_gate_primary = bool(
+                use_gate_primary
+                and os.environ.get("AIGP_GATE_PRIMARY_ENSEMBLE") == "1"
             )
+            if ensemble_gate_primary:
+                peaks = _merge_corner_peaks(
+                    _dense_corner_peaks(
+                        request["image"], models[0], models[1], device,
+                        threshold, refine_radius_px,
+                    ),
+                    _dense_corner_peaks(
+                        request["image"], models[2], models[1], device,
+                        threshold, refine_radius_px,
+                    ),
+                )
+            else:
+                peaks = _dense_corner_peaks(
+                    request["image"],
+                    models[2] if use_gate_primary else models[0],
+                    models[1],
+                    device,
+                    threshold,
+                    refine_radius_px,
+                )
             result = {
                 "generation": int(request["generation"]),
                 "frame_id": int(request["frame_id"]),
@@ -214,6 +254,9 @@ def _dense_worker_main(
                 ) * 1000.0,
                 "worker_pid": os.getpid(),
                 "gate_primary_used": bool(use_gate_primary),
+                "gate_primary_ensemble_used": bool(
+                    ensemble_gate_primary
+                ),
             }
             try:
                 result_queue.put(result, timeout=0.25)
@@ -509,11 +552,14 @@ class LiveVQ2Localizer:
             "crop_track_none": 0,
             "crop_track_stale": 0,
             "crop_track_gate_mismatch": 0,
+            "gate_ensemble_v10": 0,
+            "gate_ensemble_v10_direct": 0,
         }
         self.dense_attempts_by_gate: dict[int, int] = {}
         self.dense_fusions_by_gate: dict[int, int] = {}
         self.crop_attempts_by_gate: dict[int, int] = {}
         self.crop_fusions_by_gate: dict[int, int] = {}
+        self.last_gate_event_correction: dict | None = None
         self.async_inference_ms = 0.0
         # Opt-in 10Hz crop tracker (AIGP_CROP_TRACKER=1): between dense
         # V7/V10 fixes, place a crop from the EKF's own corner projections
@@ -604,14 +650,29 @@ class LiveVQ2Localizer:
                 "synchronous dense inference is unavailable while the "
                 "process-isolated GateNet worker is enabled"
             )
+        use_gate_primary = bool(
+            self.gate_primary is not None
+            and active_gate in self.gate_primary_gates
+        )
+        if (
+            use_gate_primary
+            and os.environ.get("AIGP_GATE_PRIMARY_ENSEMBLE") == "1"
+        ):
+            return _merge_corner_peaks(
+                _dense_corner_peaks(
+                    image, self.primary, self.refiner,
+                    self.dense_device, self.threshold,
+                    self.refine_radius_px,
+                ),
+                _dense_corner_peaks(
+                    image, self.gate_primary, self.refiner,
+                    self.dense_device, self.threshold,
+                    self.refine_radius_px,
+                ),
+            )
         return _dense_corner_peaks(
             image,
-            (
-                self.gate_primary
-                if self.gate_primary is not None
-                and active_gate in self.gate_primary_gates
-                else self.primary
-            ),
+            self.gate_primary if use_gate_primary else self.primary,
             self.refiner,
             self.dense_device,
             self.threshold,
@@ -866,6 +927,8 @@ class LiveVQ2Localizer:
             "crop_track_none": 0,
             "crop_track_stale": 0,
             "crop_track_gate_mismatch": 0,
+            "gate_ensemble_v10": 0,
+            "gate_ensemble_v10_direct": 0,
         }
         self.dense_attempts_by_gate = {}
         self.dense_fusions_by_gate = {}
@@ -959,6 +1022,29 @@ class LiveVQ2Localizer:
         # (with AIGP_MULTIGATE_ATT=1) attitude correction when at least
         # two well-separated gates are accepted. Default path unchanged.
         multigate_on = os.environ.get("AIGP_MULTIGATE") == "1"
+        # Some launch/early-course gates are already exceptionally stable
+        # with the conservative active/adjacent-gate association, while
+        # later close-range droughts benefit from the course-wide solver.
+        # Keep AIGP_MULTIGATE=1 backward compatible, but allow a live harness
+        # to restrict it to selected active gates (for example ``3-16``).
+        multigate_gate_spec = os.environ.get(
+            "AIGP_MULTIGATE_GATES", ""
+        ).strip()
+        if multigate_on and multigate_gate_spec:
+            enabled_gates: set[int] = set()
+            for chunk in multigate_gate_spec.split(","):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                if "-" in chunk:
+                    lo_text, hi_text = chunk.split("-", 1)
+                    lo, hi = int(lo_text), int(hi_text)
+                    if hi < lo:
+                        lo, hi = hi, lo
+                    enabled_gates.update(range(lo, hi + 1))
+                else:
+                    enabled_gates.add(int(chunk))
+            multigate_on = int(active_gate) in enabled_gates
         multigate_constellation = None
         update_attitude = False
         if multigate_on:
@@ -1874,6 +1960,9 @@ class LiveVQ2Localizer:
         job["gate_primary_used"] = bool(
             worker_result.get("gate_primary_used", False)
         )
+        job["gate_primary_ensemble_used"] = bool(
+            worker_result.get("gate_primary_ensemble_used", False)
+        )
         return job
 
     def start_async(self) -> None:
@@ -2027,7 +2116,15 @@ class LiveVQ2Localizer:
                 peaks=result["peaks"],
             )
             source = (
-                "gate_primary_v10_direct"
+                "gate_ensemble_v10_direct"
+                if fused
+                and result.get("gate_primary_ensemble_used", False)
+                and self.last_direct_pin_applied
+                else "gate_ensemble_v10"
+                if fused and result.get(
+                    "gate_primary_ensemble_used", False
+                )
+                else "gate_primary_v10_direct"
                 if fused
                 and result.get("gate_primary_used", False)
                 and self.last_direct_pin_applied
@@ -2295,3 +2392,62 @@ class LiveVQ2Localizer:
             frame_id=self.last_frame_id,
             initialized=True,
         )
+
+    def apply_gate_plane_event(
+        self,
+        crossed_gate: int,
+        forward_offset_m: float = 0.15,
+        sigma_m: float = 0.20,
+    ) -> dict | None:
+        """Apply the official gate pass as a one-dimensional pose fix.
+
+        VQ2's gate event is authoritative and tells us that the vehicle has
+        just crossed the physical gate plane.  Vision/IMU can otherwise carry
+        metres of longitudinal error despite having a plausible lateral gate
+        lock.  Correct only position along the gate normal: the event does not
+        observe aperture location, velocity, or attitude.
+        """
+        if (
+            self.ekf is None
+            or not 0 <= int(crossed_gate) < len(self.gates)
+        ):
+            return None
+        gate_index = int(crossed_gate)
+        gate = self.gates[gate_index]
+        qw, qx, qy, qz = np.asarray(gate["quat_wxyz"], float)
+        rotation = Rotation.from_quat([qx, qy, qz, qw]).as_matrix()
+        normal = rotation[:, 1].copy()
+        normal /= max(float(np.linalg.norm(normal)), 1e-9)
+        previous = (
+            np.asarray(self.gates[gate_index - 1]["pos"], float)
+            if gate_index > 0 else np.zeros(3, float)
+        )
+        incoming = np.asarray(gate["pos"], float) - previous
+        direction = 1.0 if float(np.dot(normal, incoming)) >= 0.0 else -1.0
+        target_plane_m = direction * max(float(forward_offset_m), 0.0)
+        gate_position = np.asarray(gate["pos"], float)
+        before_m = float(np.dot(self.ekf.p - gate_position, normal))
+        correction_m = target_plane_m - before_m
+        self.ekf.p += correction_m * normal
+
+        # A hard event constraint removes uncertainty only along the observed
+        # plane axis.  Preserve lateral/vertical position, all velocity, and
+        # attitude covariance and add realistic packet/vehicle-depth noise.
+        projection = np.eye(9)
+        projection[:3, :3] -= np.outer(normal, normal)
+        self.ekf.P = projection @ self.ekf.P @ projection.T
+        self.ekf.P[:3, :3] += (
+            max(float(sigma_m), 1e-3) ** 2 * np.outer(normal, normal)
+        )
+        self.ekf.P = 0.5 * (self.ekf.P + self.ekf.P.T)
+        payload = {
+            "gate": gate_index,
+            "before_plane_m": before_m,
+            "after_plane_m": target_plane_m,
+            "correction_m": correction_m,
+        }
+        self.last_gate_event_correction = payload
+        self.update_counts["gate_event_plane"] = (
+            self.update_counts.get("gate_event_plane", 0) + 1
+        )
+        return payload

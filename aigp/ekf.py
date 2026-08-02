@@ -108,16 +108,28 @@ class GateEKF:
                        self.K[1, 1] * Xc[1] / Xc[2] + self.K[1, 2]])
         return uv, Xc
 
-    def update_corners(self, obs, chi2_gate=9.0, update_attitude=True):
+    def update_corners(
+        self,
+        obs,
+        chi2_gate=9.0,
+        update_attitude=True,
+        sigma_px=None,
+        return_indices=False,
+    ):
         """obs: list of (Xw (3,), uv_meas (2,)). Batch EKF update with
-        per-observation chi-square gating. Returns number accepted.
+        per-observation chi-square gating. Returns number accepted, or the
+        count plus accepted observation indices when return_indices is true.
 
         If update_attitude is false, vision corrects translation/velocity
         only. This is useful when a low-noise gyro is more trustworthy than
         the planar orientation of a symmetric square landmark."""
         H_rows, r_rows = [], []
+        accepted_indices = []
+        measurement_sigma = (
+            self.sigma_px if sigma_px is None else float(sigma_px)
+        )
         Rwb = self.q.as_matrix()
-        for Xw, uv_meas in obs:
+        for observation_index, (Xw, uv_meas) in enumerate(obs):
             uv_pred, Xc = self.predict_pixel(Xw)
             if uv_pred is None:
                 continue
@@ -137,17 +149,18 @@ class GateEKF:
                 H[:, 6:9] = J_uv @ dXc_dth
             r = np.asarray(uv_meas) - uv_pred
             # innovation gating
-            S = H @ self.P @ H.T + np.eye(2) * self.sigma_px**2
+            S = H @ self.P @ H.T + np.eye(2) * measurement_sigma**2
             m2 = float(r @ np.linalg.solve(S, r))
             if m2 > chi2_gate:
                 continue
             H_rows.append(H)
             r_rows.append(r)
+            accepted_indices.append(observation_index)
         if not H_rows:
-            return 0
+            return (0, []) if return_indices else 0
         H = np.vstack(H_rows)
         r = np.concatenate(r_rows)
-        Rm = np.eye(len(r)) * self.sigma_px**2
+        Rm = np.eye(len(r)) * measurement_sigma**2
         S = H @ self.P @ H.T + Rm
         Kk = self.P @ H.T @ np.linalg.solve(S, np.eye(len(r)))
         if not update_attitude:
@@ -161,4 +174,6 @@ class GateEKF:
             self.q = self.q * Rotation.from_rotvec(dx[6:9])
         I_KH = np.eye(9) - Kk @ H
         self.P = I_KH @ self.P @ I_KH.T + Kk @ Rm @ Kk.T
+        if return_indices:
+            return len(H_rows), accepted_indices
         return len(H_rows)

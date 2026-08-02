@@ -126,6 +126,14 @@ def main() -> int:
         default=REPO / "data/models/gatenet_v10strict_ep0.pt",
     )
     parser.add_argument(
+        "--gate-primary", type=Path, default=None,
+        help="Optional primary detector used only for --gate-primary-gates.",
+    )
+    parser.add_argument(
+        "--gate-primary-gates", default="",
+        help="Comma-separated active gates that use --gate-primary.",
+    )
+    parser.add_argument(
         "--crop", type=Path,
         default=REPO / "data/models/crop_gatenet_v11crop_ep13.pt",
     )
@@ -247,6 +255,12 @@ def main() -> int:
         map_path=args.map,
         primary_checkpoint=args.primary,
         refine_checkpoint=args.refiner,
+        gate_primary_checkpoint=args.gate_primary,
+        gate_primary_gates=tuple(
+            int(value.strip())
+            for value in args.gate_primary_gates.split(",")
+            if value.strip()
+        ),
         crop_checkpoint=args.crop,
         proposal_checkpoint=args.proposal,
         calibration_path=args.calibration,

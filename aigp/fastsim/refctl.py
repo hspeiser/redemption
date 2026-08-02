@@ -135,19 +135,28 @@ class RefController:
 
 def load_winner_backbone(demo_npz, episode_npz, n_envs, device="cpu",
                          **gains):
+    """Load the same canonical reference actions consumed by live flight.
+
+    ``demo["action"]`` and the live episode's unfortunately named
+    ``wire_action`` are already canonical policy actions.  Older code applied
+    the MAVLink-to-policy conversion to ``wire_action`` a second time, which
+    distorted every body-rate and thrust command in fastsim.  Prefer the demo
+    action because it is row-aligned with the reference geometry; retain the
+    episode argument for CLI compatibility and validation of legacy callers.
+    """
     demo = np.load(demo_npz)
-    ep = np.load(episode_npz)
-    pos = demo["pos"]
-    vel = demo["vel"]
-    # the episode's "action" key is the RESIDUAL head (~0.001 on the
-    # winning lap -- the teacher flew it); the flown command is
-    # wire_action: rates = a[:3]*WIRE_RATE_LIMIT, thrust01 = (a3+1)/2
-    from aigp.fastsim.env import WIRE_RATE_LIMIT
-    wire = ep["wire_action"]
-    act = np.empty((len(wire), 4), np.float32)
-    act[:, :3] = wire[:, :3] / np.asarray(WIRE_RATE_LIMIT, np.float32)
-    act[:, 3] = 2.0 * wire[:, 3] - 1.0
-    act = np.clip(act, -1.0, 1.0)
-    n = min(len(pos), len(act))
-    return RefController(pos[:n], vel[:n], act[:n], n_envs,
-                         device=device, **gains)
+    if episode_npz is not None:
+        # Load eagerly so a misspelled/missing artifact still fails at setup,
+        # rather than halfway through a long evaluation.
+        np.load(episode_npz).close()
+    pos_key = "position" if "position" in demo.files else "pos"
+    vel_key = "velocity" if "velocity" in demo.files else "vel"
+    pos = np.asarray(demo[pos_key], np.float32)
+    vel = np.asarray(demo[vel_key], np.float32)
+    act = np.clip(np.asarray(demo["action"], np.float32), -1.0, 1.0)
+    if not (len(pos) == len(vel) == len(act)):
+        raise ValueError(
+            "reference position, velocity, and action rows must align: "
+            f"{len(pos)}, {len(vel)}, {len(act)}"
+        )
+    return RefController(pos, vel, act, n_envs, device=device, **gains)

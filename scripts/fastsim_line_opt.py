@@ -37,6 +37,7 @@ from aigp.fastsim.lineopt import (  # noqa: E402
 def make_env_cfg(args) -> FastEnvConfig:
     cfg = FastEnvConfig(
         n_envs=args.n_envs,
+        race_gates=args.race_gates,
         random_start_frac=0.0,
         rate_gain_sign=1.0,
         reloc_events=True,
@@ -238,7 +239,19 @@ def main() -> int:
     ap.add_argument("--obstacles", default=str(
         REPO / "data/vq2_obstacles_inflated.json"))
     ap.add_argument("--speed-cap", type=float, default=8.0)
+    ap.add_argument(
+        "--race-gates", type=int, default=N_GATES,
+        help="Finish and score after this many gates; geometry after it is frozen.",
+    )
     ap.add_argument("--clearance", type=float, default=0.25)
+    ap.add_argument("--cap-margin", type=float, default=0.90)
+    ap.add_argument("--a-lat-max", type=float, default=9.0)
+    ap.add_argument("--a-fwd", type=float, default=5.0)
+    ap.add_argument("--a-brk", type=float, default=6.0)
+    ap.add_argument("--yaw-margin", type=float, default=0.70)
+    ap.add_argument("--normal-lead-m", type=float, default=1.3)
+    ap.add_argument("--launch-speed", type=float, default=0.5)
+    ap.add_argument("--initial-speed-scale", type=float, default=0.80)
     ap.add_argument("--demo-corridor", type=float, default=2.0)
     ap.add_argument("--n-envs", type=int, default=256)
     ap.add_argument("--pop", type=int, default=28)
@@ -247,9 +260,19 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out-prefix", required=True)
+    ap.add_argument(
+        "--init-best",
+        default=None,
+        help=(
+            "Optional prior *_best.npz whose theta seeds the CEM mean. "
+            "Useful after a measured dynamics update."
+        ),
+    )
     ap.add_argument("--smoke", action="store_true",
                     help="tiny run to validate the pipeline")
     args = ap.parse_args()
+    if not 1 <= args.race_gates <= N_GATES:
+        raise ValueError(f"--race-gates must be in 1..{N_GATES}")
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
@@ -258,15 +281,43 @@ def main() -> int:
 
     model = SurrogateModel.load(args.model)
     gate_pos, gate_R = load_oriented_gates(args.map)
-    lcfg = LineConfig(speed_cap=args.speed_cap, clearance=args.clearance)
+    lcfg = LineConfig(
+        speed_cap=args.speed_cap,
+        clearance=args.clearance,
+        cap_margin=args.cap_margin,
+        a_lat_max=args.a_lat_max,
+        a_fwd=args.a_fwd,
+        a_brk=args.a_brk,
+        yaw_margin=args.yaw_margin,
+        normal_lead_m=args.normal_lead_m,
+        launch_speed=args.launch_speed,
+    )
     out_prefix = Path(args.out_prefix)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
 
     n_par = N_GATES * 2 + N_GATES + 1
     mean = np.concatenate([np.zeros(N_GATES * 2),
-                           np.full(N_GATES + 1, 0.80)])
+                           np.full(N_GATES + 1, args.initial_speed_scale)])
     sd = np.concatenate([np.full(N_GATES * 2, 0.22),
                          np.full(N_GATES + 1, 0.10)])
+    active = np.zeros(n_par, bool)
+    active[:args.race_gates * 2] = True
+    active[N_GATES * 2:N_GATES * 2 + args.race_gates] = True
+    sd[~active] = 0.0
+    if args.init_best:
+        prior = np.load(args.init_best, allow_pickle=False)
+        prior_theta = np.asarray(prior["theta"], np.float64)
+        if prior_theta.shape != mean.shape:
+            raise ValueError(
+                f"init theta shape {prior_theta.shape}, expected {mean.shape}"
+            )
+        mean = prior_theta.copy()
+        # Search locally around the previously reliable geometry/schedule;
+        # the changed dynamics should not throw away a good map solution.
+        sd = np.concatenate([np.full(N_GATES * 2, 0.10),
+                             np.full(N_GATES + 1, 0.06)])
+        sd[~active] = 0.0
+        print(f"initialized CEM from {args.init_best}", flush=True)
     off_lim = HOLE_HALF - args.clearance
 
     def unpack(theta):
@@ -311,6 +362,7 @@ def main() -> int:
         elite = np.stack([th for _s, th in results[:args.elite]])
         mean = 0.4 * mean + 0.6 * elite.mean(0)
         sd = 0.5 * sd + 0.5 * (elite.std(0) + 0.02)
+        sd[~active] = 0.0
         history.append({
             "iter": it,
             "best_score": results[0][0],
@@ -336,6 +388,15 @@ def main() -> int:
         f"{out_prefix}_best.npz",
         theta=best["theta"], offsets=ref["offsets"],
         seg_scale=ref["seg_scale"],
+        speed_cap=np.float64(args.speed_cap),
+        clearance=np.float64(args.clearance),
+        cap_margin=np.float64(args.cap_margin),
+        a_lat_max=np.float64(args.a_lat_max),
+        a_fwd=np.float64(args.a_fwd),
+        a_brk=np.float64(args.a_brk),
+        yaw_margin=np.float64(args.yaw_margin),
+        normal_lead_m=np.float64(args.normal_lead_m),
+        launch_speed=np.float64(args.launch_speed),
         ref_pos=ref["pos"], ref_vel=ref["vel"],
         ref_quat=ref["quat_wxyz"], ref_act=ff, ref_gate=ref["gate"],
         trace_p=trace["p"], trace_v=trace["v"], trace_q=trace["q"],
@@ -344,7 +405,15 @@ def main() -> int:
     )
     report = {
         "config": {"speed_cap": args.speed_cap,
+                   "race_gates": args.race_gates,
                    "clearance": args.clearance,
+                   "cap_margin": args.cap_margin,
+                   "a_lat_max": args.a_lat_max,
+                   "a_fwd": args.a_fwd,
+                   "a_brk": args.a_brk,
+                   "yaw_margin": args.yaw_margin,
+                   "normal_lead_m": args.normal_lead_m,
+                   "launch_speed": args.launch_speed,
                    "map": args.map, "model": args.model},
         "planned_lap_s": ref["planned_lap_s"],
         "feasibility": feasibility(ref),

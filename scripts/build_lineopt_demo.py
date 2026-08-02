@@ -132,6 +132,13 @@ def main() -> int:
                     help="*_best.npz from fastsim_line_opt")
     ap.add_argument("--speed-cap", type=float, required=True)
     ap.add_argument("--clearance", type=float, required=True)
+    ap.add_argument("--cap-margin", type=float)
+    ap.add_argument("--a-lat-max", type=float)
+    ap.add_argument("--a-fwd", type=float)
+    ap.add_argument("--a-brk", type=float)
+    ap.add_argument("--yaw-margin", type=float)
+    ap.add_argument("--normal-lead-m", type=float)
+    ap.add_argument("--launch-speed", type=float)
     ap.add_argument("--map", default=str(
         REPO / "data/vq2_runtime_map_g9g15fix.json"))
     ap.add_argument("--model", default=str(
@@ -154,7 +161,27 @@ def main() -> int:
     best = np.load(args.best)
     theta = best["theta"]
     gate_pos, gate_R = load_oriented_gates(args.map)
-    lcfg = LineConfig(speed_cap=args.speed_cap, clearance=args.clearance)
+    defaults = LineConfig()
+    def line_value(name: str) -> float:
+        explicit = getattr(args, name)
+        if explicit is not None:
+            return float(explicit)
+        key = name
+        if key in best.files:
+            return float(np.asarray(best[key]))
+        return float(getattr(defaults, name))
+
+    lcfg = LineConfig(
+        speed_cap=args.speed_cap,
+        clearance=args.clearance,
+        cap_margin=line_value("cap_margin"),
+        a_lat_max=line_value("a_lat_max"),
+        a_fwd=line_value("a_fwd"),
+        a_brk=line_value("a_brk"),
+        yaw_margin=line_value("yaw_margin"),
+        normal_lead_m=line_value("normal_lead_m"),
+        launch_speed=line_value("launch_speed"),
+    )
     off = theta[:N_GATES * 2]
     sc = theta[N_GATES * 2:]
     ref = build_reference(gate_pos, gate_R, off, sc, lcfg)
