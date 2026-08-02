@@ -14,6 +14,23 @@ DCL simulator over MAVLink + UDP camera stream.
   - `vision/` — auto-labeling (map projection at ground-truth pose, per-episode clock refinement, orange-mask visibility) and GateNet (corner heatmaps + offsets, pose/velocity/next-gate heads).
 - `scripts/` — the working set: dataset build, training (`train_net.py`), live browser overlay with per-gate tracking + multi-gate joint PnP (`live_overlay.py`), replay evaluation against odometry truth (`replay_eval.py`), PnP/blue-robustness/accuracy probes, replay video rendering.
 
+## Persistent VQ2 pipeline dashboard
+
+The flywheel dashboard remains available when no drone is flying and reads the
+archived episode, corpus, world-model, audit, and cycle-ledger artifacts from
+`D:\ai-gp`. Start or reuse it with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .remote\launch_vq2_pipeline_dashboard.ps1
+```
+
+Then open `http://127.0.0.1:8900/`. The full-course ABBA launcher also ensures
+the dashboard is running automatically. It reports the official record,
+recent completion and timing-health rates, late-course reach, eligible training
+rows, latest frozen-audit error, record progression, failure gates, recent
+flights, and the collect -> ingest -> train -> audit -> decide -> publish state
+machine. Every metric includes its interpretation directly in the page.
+
 ## Measured results (replays of real racing, odometry ground truth)
 
 - Corner localization: ~0.05 px median vs geometric truth (parked), 0.73 px median over the full flight envelope eval

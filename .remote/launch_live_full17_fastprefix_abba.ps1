@@ -125,6 +125,10 @@ if ($DryRun) {
     exit 0
 }
 
+$pipelineDashboard = Join-Path $repo '.remote\launch_vq2_pipeline_dashboard.ps1'
+& powershell -NoProfile -ExecutionPolicy Bypass -File $pipelineDashboard |
+    Out-Null
+
 $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $stdout = Join-Path $logRoot "vq2_full17_fastprefix_abba_$stamp.stdout.log"
 $stderr = Join-Path $logRoot "vq2_full17_fastprefix_abba_$stamp.stderr.log"
