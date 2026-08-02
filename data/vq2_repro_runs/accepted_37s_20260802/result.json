@@ -1,0 +1,17 @@
+{
+  "run_id": "20260802_110754",
+  "accepted_by_qualifier_ui": true,
+  "official_final_gate_time_s": 36.999767303000006,
+  "release_lead_ms": 142,
+  "configured_release_margin_ms": -150.0,
+  "control_steps": 1115,
+  "harness_duration_s": 38.659799337387085,
+  "finished": true,
+  "final_gate_index": 17,
+  "config_sha256": "4de54a7b3d850ecb3b1461cede623d72eff1fec0b004354aa51ca958d7be0916",
+  "actor_sha256": "c4b3ca2cbcae0741b25ee38c52a668f55bf11d40465da2f243c7076459fcc0be",
+  "secondary_actor_sha256": "22712c6a4753fffbc123a1ff4900ef58e84d89cd1f1e65c3f6d3dfa8c12572eb",
+  "reference_sha256": "f8f37565e32a6dde2b194bc5b3ba22524f90a7debe66a7ca74a249933f72fe99",
+  "source_directory": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_110754",
+  "notes": "official_elapsed_s was not copied into episodes.jsonl; the authoritative final official_gate_time_s in the terminal step was 36.999767303 seconds. Henry confirmed the qualifier UI accepted the run."
+}
