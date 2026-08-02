@@ -290,6 +290,14 @@ def gate_crossing_offset(
     }
 
 
+def zero_residual_for_probe_arm(
+    probe_arm: str,
+    champion_uses_residual: bool,
+) -> bool:
+    """Whether an interleaved arm must suppress the loaded residual actor."""
+    return probe_arm == "protected_champion" and not champion_uses_residual
+
+
 def gate10_cut_metrics(transitions: list[dict]) -> dict[str, float | None]:
     """Summarize the active x=121..125 gate-10 S-curve."""
     rows = [
@@ -636,8 +644,10 @@ class VQ2SACLearner:
         ppo_residual_schedule: Path | None,
         champion_demo_path: Path | None,
         champion_config_path: Path | None,
+        champion_uses_residual: bool,
     ) -> None:
         self.device = torch.device(device)
+        self.champion_uses_residual = bool(champion_uses_residual)
         payload = torch.load(
             checkpoint_path, map_location=self.device, weights_only=False
         )
@@ -2257,7 +2267,9 @@ class VQ2SACLearner:
                 -1.0,
                 1.0,
             )
-        if self.probe_arm == "protected_champion":
+        if zero_residual_for_probe_arm(
+            self.probe_arm, self.champion_uses_residual
+        ):
             # Same-session control arm: reproduce the known protected
             # reference controller exactly. The candidate actor and schedule
             # stay loaded, avoiding a process/session-health confound.
@@ -3849,6 +3861,16 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--interleave-champion-residual",
+        action="store_true",
+        help=(
+            "Keep the loaded residual actor active on protected-champion "
+            "episodes. Use this when the champion is itself a hybrid "
+            "reference-plus-residual stack. The default preserves the "
+            "historical reference-only control arm."
+        ),
+    )
+    parser.add_argument(
         "--probe-arm-sequence",
         default="protected_champion,candidate",
         help=(
@@ -4204,6 +4226,7 @@ def main() -> int:
         ppo_residual_schedule=args.ppo_residual_schedule,
         champion_demo_path=args.interleave_champion_demo,
         champion_config_path=args.interleave_champion_config,
+        champion_uses_residual=args.interleave_champion_residual,
     )
     replay_source = args.replay_path
     if replay_source is None:
@@ -4852,11 +4875,17 @@ def main() -> int:
                 ),
                 "actor_sha256": (
                     actor_artifact_hash
-                    if probe_arm == "candidate" else None
+                    if (
+                        probe_arm == "candidate"
+                        or args.interleave_champion_residual
+                    ) else None
                 ),
                 "secondary_actor_sha256": (
                     secondary_actor_artifact_hash
-                    if probe_arm == "candidate" else None
+                    if (
+                        probe_arm == "candidate"
+                        or args.interleave_champion_residual
+                    ) else None
                 ),
                 "reference_sha256": (
                     candidate_reference_hash

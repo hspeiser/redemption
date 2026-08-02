@@ -6,10 +6,24 @@ from pathlib import Path
 import numpy as np
 
 from aigp.flight import RateController
-from scripts.train_vq2_sac_live import VQ2SACLearner
+from scripts.train_vq2_sac_live import (
+    VQ2SACLearner,
+    zero_residual_for_probe_arm,
+)
 
 
 class LiveProbeControllerProfileTests(unittest.TestCase):
+    def test_hybrid_champion_keeps_residual_actor(self) -> None:
+        self.assertTrue(zero_residual_for_probe_arm(
+            "protected_champion", champion_uses_residual=False
+        ))
+        self.assertFalse(zero_residual_for_probe_arm(
+            "protected_champion", champion_uses_residual=True
+        ))
+        self.assertFalse(zero_residual_for_probe_arm(
+            "candidate", champion_uses_residual=False
+        ))
+
     def _bare_learner(self) -> VQ2SACLearner:
         learner = VQ2SACLearner.__new__(VQ2SACLearner)
         for name in learner._CONTROLLER_PROFILE_FIELDS:

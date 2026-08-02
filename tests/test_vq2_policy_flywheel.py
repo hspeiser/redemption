@@ -1,6 +1,7 @@
 import numpy as np
 
 from scripts.build_vq2_master_worldmodel_dataset import (
+    episode_timing_eligible,
     load_split_registry,
     session_split,
 )
@@ -49,6 +50,15 @@ def test_worldmodel_builder_keeps_final_test_frozen(tmp_path):
     )
     assignments, _ = load_split_registry(registry_path)
     assert session_split(session, assignments) == "final_test"
+
+
+def test_worldmodel_builder_rejects_aggregate_timing_quarantine():
+    assert episode_timing_eligible({})
+    assert episode_timing_eligible({"timing_healthy": True})
+    assert not episode_timing_eligible({
+        "timing_healthy": False,
+        "timing_health_reasons": ["sim_step_p95"],
+    })
 
 
 def test_segment_bounds_keeps_context_and_next_gate_entry():

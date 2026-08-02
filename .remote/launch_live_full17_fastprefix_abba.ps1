@@ -1,7 +1,8 @@
 param(
     [int]$Cycles = 1,
     [string]$CandidateConfig = 'D:\ai-gp\worldmodel\g0g4_v22_g3center_live_config_v1.json',
-    [string]$ChampionConfig = 'D:\ai-gp\training\vq2_fullcourse_reliablebackbone_all17_v1\20260801_160352\config.json',
+    [string]$ChampionConfig = 'D:\ai-gp\champions\vq2_36s_20260802\training_session\config.json',
+    [bool]$ChampionUsesResidual = $true,
     [string]$Checkpoint = 'C:\Users\henry\Desktop\ai-gp\worldmodel\ppo_multimodel_segmentcredit_v8\best.pt',
     [string]$SecondaryCheckpoint = 'C:\Users\henry\Desktop\ai-gp\worldmodel\ppo_all17_multimodel_v3_late_safe\best.pt',
     [string]$SecondaryResidualGates = '11,12,14,15,16',
@@ -73,6 +74,7 @@ $arguments = @(
     '--override', 'residual_scale=0.20',
     '--override', 'interleave_protected_champion=true',
     '--override', "interleave_champion_config=$ChampionConfig",
+    '--override', "interleave_champion_residual=$ChampionUsesResidual",
     '--override', "probe_arm_sequence=$sequenceText",
     '--override', "map=$map",
     '--override', "primary=$Primary",
@@ -103,6 +105,7 @@ if ($DryRun) {
         episodes = $episodes
         candidate_config = (Resolve-Path -LiteralPath $CandidateConfig).Path
         champion_config = (Resolve-Path -LiteralPath $ChampionConfig).Path
+        champion_uses_residual = $ChampionUsesResidual
         checkpoint = (Resolve-Path -LiteralPath $Checkpoint).Path
         secondary_checkpoint = (
             Resolve-Path -LiteralPath $SecondaryCheckpoint

@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "cycle": "live36-v30-g5g6",
+  "date": "2026-08-02",
+  "protected_official_time_s": 36.826946258,
+  "protected_artifact": "D:\\ai-gp\\champions\\vq2_36s_20260802",
+  "protected_manifest_sha256": "40232920af6b8273998c6da56206c6de7b723fc87e9a05582bc79aac1c8d6bae",
+  "canonical_manifest_sha256": "2bb84fdf26bd7b4fc3860f243ef20d8e38affdf8b405a75dba126abf96a490d5",
+  "split_registry_sha256": "b6f835c5085d29125f50468d8ab1dd2dedd843b8bf19273531a03ae562765336",
+  "live_collection": {
+    "baseline_session": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_125354",
+    "baseline_timing_healthy_episodes": 8,
+    "baseline_finishes": 1,
+    "baseline_finish_official_s": 36.826946258,
+    "diagnostic_offsets_m": {
+      "gate_5_lateral": 0.1,
+      "gate_6_lateral": -0.1
+    },
+    "diagnostic_timing_healthy_episodes": 7,
+    "diagnostic_finishes": 2,
+    "diagnostic_finish_official_s": [36.963943481, 36.888019561],
+    "diagnostic_decision": "retain_for_training_and_larger_abba_not_promoted",
+    "quarantined_timing_unhealthy_episodes": 1
+  },
+  "world_model": {
+    "name": "v30_allgate_registry_flywheel",
+    "sha256": "fe21bb15aafd8d31c99a258a851c26bd3ae7d2a12b8eb6c040e6f15e868abf0a",
+    "audit_sha256": "d4fd2768a4f1cc1c6af5fde5bd8ff5e23e3d712e56aff0c61374dcf8c3ff77c4",
+    "audit_horizon_steps": 32,
+    "audit_starts": 26887,
+    "position_median_m": 0.3169095516204834,
+    "position_p90_m": 0.7396303296089173,
+    "velocity_median_mps": 0.3063846230506897,
+    "velocity_p90_mps": 0.6985600113868713,
+    "attitude_median_deg": 0.5786584615707397,
+    "attitude_p90_deg": 1.8102142810821544,
+    "decision": "retain_v25_v28_v30_pool_no_live_inference"
+  },
+  "ingestion_fix": "reject_explicit_episode_level_timing_quarantine_before_transition_extraction",
+  "hand_labels_required": false,
+  "live_candidate_promoted": false
+}

@@ -115,6 +115,18 @@ def outcome_code(summary: dict) -> int:
     }.get(failure, 6)
 
 
+def episode_timing_eligible(summary: dict) -> bool:
+    """Reject episodes quarantined by aggregate live timing checks.
+
+    Older recordings do not carry an episode-level timing verdict, so they
+    retain the existing transition-level filtering behavior.  A modern
+    explicit ``False`` is authoritative: simulator-step p95/max can make an
+    episode unhealthy even when every row's packet-age flag is individually
+    true.
+    """
+    return summary.get("timing_healthy") is not False
+
+
 def extract_episode(
     path: Path,
     summary: dict,
@@ -123,6 +135,8 @@ def extract_episode(
     session_id: int,
     max_gate: int,
 ) -> dict[str, np.ndarray] | None:
+    if not episode_timing_eligible(summary):
+        return None
     try:
         payload = np.load(path, allow_pickle=False)
         observation = np.asarray(payload["observation"], np.float32)
