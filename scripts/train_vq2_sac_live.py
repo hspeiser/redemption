@@ -4837,7 +4837,7 @@ def main() -> int:
                 "duration_s": duration,
                 "official_elapsed_s": (
                     float(final_info["official_gate_time_s"])
-                    if poc_completed
+                    if (finished or poc_completed)
                     and final_info.get("official_gate_time_s") is not None
                     else None
                 ),
