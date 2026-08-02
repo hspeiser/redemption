@@ -4281,6 +4281,17 @@ def main() -> int:
     candidate_reference_hash = sha256_file(args.demo)
     champion_reference_hash = sha256_file(args.interleave_champion_demo)
     champion_config_hash = sha256_file(args.interleave_champion_config)
+    runtime_artifact_hashes = {
+        "seed_checkpoint_sha256": sha256_file(args.seed_checkpoint),
+        "map_sha256": sha256_file(args.map),
+        "primary_detector_sha256": sha256_file(args.primary),
+        "refiner_detector_sha256": sha256_file(args.refiner),
+        "gate_primary_detector_sha256": sha256_file(args.gate_primary),
+        "crop_detector_sha256": sha256_file(args.crop),
+        "proposal_model_sha256": sha256_file(args.proposal),
+        "calibration_sha256": sha256_file(args.calibration),
+        "line_model_sha256": sha256_file(args.line_model),
+    }
     config_payload["identity"] = {
         "config_sha256": config_hash,
         "candidate_schedule_sha256": candidate_schedule_hash,
@@ -4290,6 +4301,7 @@ def main() -> int:
         "champion_reference_sha256": champion_reference_hash,
         "champion_config_sha256": champion_config_hash,
         "probe_arm_sequence": list(probe_arm_sequence),
+        **runtime_artifact_hashes,
     }
     (run_dir / "config.json").write_text(json.dumps(
         config_payload, indent=2
@@ -4824,8 +4836,16 @@ def main() -> int:
                     candidate_schedule_hash
                     if probe_arm == "candidate" else champion_config_hash
                 ),
+                "controller_config_sha256": (
+                    config_hash
+                    if probe_arm == "candidate" else champion_config_hash
+                ),
                 "actor_sha256": (
                     actor_artifact_hash
+                    if probe_arm == "candidate" else None
+                ),
+                "secondary_actor_sha256": (
+                    secondary_actor_artifact_hash
                     if probe_arm == "candidate" else None
                 ),
                 "reference_sha256": (
@@ -4833,6 +4853,7 @@ def main() -> int:
                     if probe_arm == "candidate"
                     else champion_reference_hash or candidate_reference_hash
                 ),
+                **runtime_artifact_hashes,
                 "steps": len(transitions),
                 "duration_s": duration,
                 "official_elapsed_s": (

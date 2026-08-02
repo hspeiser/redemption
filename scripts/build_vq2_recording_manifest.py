@@ -49,22 +49,21 @@ def episode_summary(path: Path) -> dict[str, Any]:
     except (OSError, UnicodeDecodeError):
         pass
     failures = Counter(str(row.get("failure")) for row in rows if row.get("failure"))
-    hashes = sorted({
-        str(row.get("config_sha256")) for row in rows
-        if row.get("config_sha256")
-    })
-    schedules = sorted({
-        str(row.get("schedule_sha256")) for row in rows
-        if row.get("schedule_sha256")
-    })
-    actors = sorted({
-        str(row.get("actor_sha256")) for row in rows
-        if row.get("actor_sha256")
-    })
-    refs = sorted({
-        str(row.get("reference_sha256")) for row in rows
-        if row.get("reference_sha256")
-    })
+    provenance_fields = (
+        "config_sha256", "controller_config_sha256",
+        "schedule_sha256", "actor_sha256", "secondary_actor_sha256",
+        "reference_sha256", "seed_checkpoint_sha256", "map_sha256",
+        "primary_detector_sha256", "refiner_detector_sha256",
+        "gate_primary_detector_sha256", "crop_detector_sha256",
+        "proposal_model_sha256", "calibration_sha256",
+        "line_model_sha256",
+    )
+    provenance = {
+        name: sorted({
+            str(row.get(name)) for row in rows if row.get(name)
+        })
+        for name in provenance_fields
+    }
     return {
         "episodes": len(rows),
         "finished": sum(bool(row.get("finished")) for row in rows),
@@ -77,10 +76,7 @@ def episode_summary(path: Path) -> dict[str, Any]:
             default=None,
         ),
         "failures": dict(sorted(failures.items())),
-        "config_sha256": hashes,
-        "schedule_sha256": schedules,
-        "actor_sha256": actors,
-        "reference_sha256": refs,
+        **provenance,
     }
 
 
@@ -91,8 +87,10 @@ def selected_args(config: Any) -> dict[str, Any]:
     if not isinstance(args, dict):
         return {}
     names = (
-        "demo", "map", "gate_primary", "crop", "seed_checkpoint",
-        "ppo_residual_checkpoint", "ppo_residual_schedule", "eval_only",
+        "demo", "map", "primary", "refiner", "gate_primary", "crop",
+        "proposal", "calibration", "line_model", "seed_checkpoint",
+        "ppo_residual_checkpoint", "secondary_ppo_residual_checkpoint",
+        "ppo_residual_schedule", "eval_only",
         "vision_hz", "vision_device", "crop_tracker", "crop_tracker_hz",
         "teacher_blend", "residual_scale", "poc_stop_after_gate",
     )
@@ -103,6 +101,7 @@ def training_entry(host: str, directory: Path) -> dict[str, Any]:
     episodes_path = directory / "episodes.jsonl"
     config_path = directory / "config.json"
     config = read_json(config_path)
+    identity = config.get("identity", {}) if isinstance(config, dict) else {}
     summary = episode_summary(episodes_path)
     npz = list(directory.glob("episode_*.npz"))
     raw_pointer = directory / "raw_archive_path.txt"
@@ -117,6 +116,7 @@ def training_entry(host: str, directory: Path) -> dict[str, Any]:
         "session_id": directory.name,
         "config_file_sha256": file_hash(config_path) if config_path.exists() else None,
         "config": selected_args(config),
+        "identity": identity if isinstance(identity, dict) else {},
         "episode_npz_count": len(npz),
         "episode_npz_bytes": sum(path.stat().st_size for path in npz),
         "has_steps": (directory / "steps.jsonl").exists(),

@@ -170,15 +170,21 @@ class VQ2Dashboard:
             row for row in summary.get("crossing_offsets", [])
             if int(row.get("gate", -1)) == self.poc_gate
         ), None)
+        provenance_fields = (
+            "config_sha256", "controller_config_sha256",
+            "schedule_sha256", "actor_sha256", "secondary_actor_sha256",
+            "reference_sha256", "seed_checkpoint_sha256", "map_sha256",
+            "primary_detector_sha256", "refiner_detector_sha256",
+            "gate_primary_detector_sha256", "crop_detector_sha256",
+            "proposal_model_sha256", "calibration_sha256",
+            "line_model_sha256",
+        )
         result = {
             "run_number": len(self._results),
             "episode": episode,
             "run_id": summary.get("run_id"),
-            "config_sha256": summary.get("config_sha256"),
             "schedule_arm": summary.get("schedule_arm"),
-            "schedule_sha256": summary.get("schedule_sha256"),
-            "actor_sha256": summary.get("actor_sha256"),
-            "reference_sha256": summary.get("reference_sha256"),
+            **{name: summary.get(name) for name in provenance_fields},
             "success": crossing is not None,
             "time_s": (
                 float(summary["official_elapsed_s"])
