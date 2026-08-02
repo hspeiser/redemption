@@ -3,10 +3,13 @@ param(
     [string]$CandidateConfig = 'D:\ai-gp\worldmodel\g0g4_v22_g3center_live_config_v1.json',
     [string]$ChampionConfig = 'D:\ai-gp\training\vq2_fullcourse_reliablebackbone_all17_v1\20260801_160352\config.json',
     [string]$Checkpoint = 'C:\Users\henry\Desktop\ai-gp\worldmodel\ppo_multimodel_segmentcredit_v8\best.pt',
+    [string]$SecondaryCheckpoint = 'C:\Users\henry\Desktop\ai-gp\worldmodel\ppo_all17_multimodel_v3_late_safe\best.pt',
+    [string]$SecondaryResidualGates = '11,12,14,15,16',
     [string]$Primary = 'C:\Users\henry\Desktop\ai-gp\data\models\gatenet_v7_best.pt',
     [string]$PrefixPrimary = 'C:\Users\henry\Desktop\ai-gp\data\models\gatenet_v13drought_best.pt',
-    [string]$PrefixPrimaryGates = '0,1,2,3,4',
-    [string]$ResidualGates = '0,1,2,4',
+    [string]$PrefixPrimaryGates = '3',
+    [string]$ResidualGates = '0,1,2,4,11,12,14,15,16',
+    [string]$ReferenceLateralOffsets = '0:0,1:0.300000012,2:0.0878505111,3:-0.3,4:0.45',
     [string]$Sequence = 'protected_champion,candidate,candidate,protected_champion',
     [double]$OfficialReleaseMarginMs = 20.0,
     [switch]$DryRun
@@ -38,6 +41,7 @@ $sequenceText = $probeSequence -join ','
 
 foreach ($required in @(
     $python, $launcher, $CandidateConfig, $ChampionConfig, $Checkpoint,
+    $SecondaryCheckpoint,
     $map, $Primary, $PrefixPrimary
 )) {
     if (-not (Test-Path -LiteralPath $required)) {
@@ -48,6 +52,7 @@ foreach ($required in @(
 New-Item -ItemType Directory -Force -Path `
     $outputRoot, $recordRoot, $logRoot | Out-Null
 $env:AIGP_MULTIGATE = '1'
+$env:AIGP_GATE_PRIMARY_ENSEMBLE = '1'
 $arguments = @(
     '-u', $launcher,
     '--config', $CandidateConfig,
@@ -56,7 +61,10 @@ $arguments = @(
     '--eval-only',
     '--override', 'poc_stop_after_gate=-1',
     '--override', "ppo_residual_checkpoint=$Checkpoint",
+    '--override', "secondary_ppo_residual_checkpoint=$SecondaryCheckpoint",
+    '--override', "secondary_ppo_residual_gates=$SecondaryResidualGates",
     '--override', "residual_gates=$ResidualGates",
+    '--override', "reference_lateral_offsets=$ReferenceLateralOffsets",
     '--override', 'train_gate=-1',
     '--override', 'residual_scale=0.20',
     '--override', 'interleave_protected_champion=true',
@@ -92,10 +100,16 @@ if ($DryRun) {
         candidate_config = (Resolve-Path -LiteralPath $CandidateConfig).Path
         champion_config = (Resolve-Path -LiteralPath $ChampionConfig).Path
         checkpoint = (Resolve-Path -LiteralPath $Checkpoint).Path
+        secondary_checkpoint = (
+            Resolve-Path -LiteralPath $SecondaryCheckpoint
+        ).Path
+        secondary_residual_gates = $SecondaryResidualGates
         primary = (Resolve-Path -LiteralPath $Primary).Path
         prefix_primary = (Resolve-Path -LiteralPath $PrefixPrimary).Path
         prefix_primary_gates = $PrefixPrimaryGates
         residual_gates = $ResidualGates
+        reference_lateral_offsets = $ReferenceLateralOffsets
+        gate_primary_ensemble = $true
         one_process = $true
         simulator_restart = $false
         strict_timing_abort = $true

@@ -631,6 +631,8 @@ class VQ2SACLearner:
         finish_replay_boost: float,
         n_step: int,
         ppo_residual_checkpoint: Path | None,
+        secondary_ppo_residual_checkpoint: Path | None,
+        secondary_ppo_residual_gates: tuple[int, ...],
         ppo_residual_schedule: Path | None,
         champion_demo_path: Path | None,
         champion_config_path: Path | None,
@@ -731,6 +733,14 @@ class VQ2SACLearner:
         self.normalization_clip: float | None = None
         self.ppo_residual_schedule_path = ppo_residual_schedule
         self.ppo_residual_schedule: np.ndarray | None = None
+        self.secondary_ppo_residual_actor = None
+        self.secondary_ppo_observation_mean: np.ndarray | None = None
+        self.secondary_ppo_observation_std: np.ndarray | None = None
+        self.secondary_ppo_residual_gates = {
+            int(gate)
+            for gate in secondary_ppo_residual_gates
+            if 0 <= int(gate) < N_RACE_GATES
+        }
         self.probe_arm = "candidate"
         if ppo_residual_checkpoint is not None:
             ppo = torch.load(
@@ -750,6 +760,33 @@ class VQ2SACLearner:
             print(
                 "Loaded fastsim PPO residual "
                 f"{ppo_residual_checkpoint} @ iter {ppo.get('iter', '?')}",
+                flush=True,
+            )
+        if secondary_ppo_residual_checkpoint is not None:
+            secondary_ppo = torch.load(
+                secondary_ppo_residual_checkpoint,
+                map_location="cpu",
+                weights_only=False,
+            )
+            secondary_actor = GaussianActor(OBS_DIM, ACT_DIM).cpu().eval()
+            secondary_actor.load_state_dict(secondary_ppo["actor"])
+            for parameter in secondary_actor.parameters():
+                parameter.requires_grad_(False)
+            self.secondary_ppo_residual_actor = secondary_actor
+            self.secondary_ppo_observation_mean = np.asarray(
+                secondary_ppo["obs_mean"].detach().cpu(), np.float32
+            )
+            self.secondary_ppo_observation_std = np.sqrt(
+                np.asarray(
+                    secondary_ppo["obs_var"].detach().cpu(), np.float32
+                )
+                + 1e-6
+            )
+            print(
+                "Loaded gate-routed secondary fastsim PPO residual "
+                f"{secondary_ppo_residual_checkpoint} @ iter "
+                f"{secondary_ppo.get('iter', '?')} for gates "
+                f"{sorted(self.secondary_ppo_residual_gates)}",
                 flush=True,
             )
         self.return_scale = float(payload["return_scale"])
@@ -1584,10 +1621,29 @@ class VQ2SACLearner:
         deterministic: bool,
         exploration_clip: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        event_gate_index = int(np.argmax(observation[34:51]))
         tensor = torch.from_numpy(
             self.normalize(observation)
         ).unsqueeze(0)
-        if self.recurrent_residual is not None:
+        secondary_actor_active = bool(
+            self.secondary_ppo_residual_actor is not None
+            and event_gate_index in self.secondary_ppo_residual_gates
+        )
+        if secondary_actor_active:
+            secondary_normalized = np.clip(
+                (
+                    np.asarray(observation, np.float32)
+                    - self.secondary_ppo_observation_mean
+                ) / self.secondary_ppo_observation_std,
+                -8.0,
+                8.0,
+            ).astype(np.float32, copy=False)
+            residual_mean = self.secondary_ppo_residual_actor.deterministic(
+                torch.from_numpy(secondary_normalized).unsqueeze(0)
+            )
+            self.last_counterfactual_gate_score = 0.0
+            self.last_counterfactual_gate_active = False
+        elif self.recurrent_residual is not None:
             residual_mean, self.recurrent_residual_hidden = (
                 self.recurrent_residual.step(
                     tensor, self.recurrent_residual_hidden
@@ -1617,7 +1673,6 @@ class VQ2SACLearner:
             )
         else:
             teacher_mean = self.teacher.deterministic(tensor)
-        event_gate_index = int(np.argmax(observation[34:51]))
         current_rotation = observation_rotation(observation)
         current_gate_vector_world = (
             current_rotation @ np.asarray(observation[:3]) * 10.0
@@ -2251,6 +2306,9 @@ class VQ2SACLearner:
             "residual_schedule_active": bool(
                 self.ppo_residual_schedule is not None
                 and self.probe_arm == "candidate"
+            ),
+            "residual_actor_source": (
+                "secondary_ppo" if secondary_actor_active else "primary"
             ),
             "probe_arm": self.probe_arm,
             "residual_schedule_gate": int(event_gate_index),
@@ -3724,6 +3782,25 @@ def parse_args():
         ),
     )
     parser.add_argument(
+        "--secondary-ppo-residual-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Optional second fastsim PPO checkpoint used only on "
+            "--secondary-ppo-residual-gates. This preserves a proven primary "
+            "actor while routing selected course segments to a specialized "
+            "actor with its own observation normalizer."
+        ),
+    )
+    parser.add_argument(
+        "--secondary-ppo-residual-gates",
+        default="",
+        help=(
+            "Comma-separated gates routed to "
+            "--secondary-ppo-residual-checkpoint."
+        ),
+    )
+    parser.add_argument(
         "--ppo-residual-schedule",
         type=Path,
         default=None,
@@ -4105,6 +4182,14 @@ def main() -> int:
         finish_replay_boost=args.finish_replay_boost,
         n_step=args.n_step,
         ppo_residual_checkpoint=args.ppo_residual_checkpoint,
+        secondary_ppo_residual_checkpoint=(
+            args.secondary_ppo_residual_checkpoint
+        ),
+        secondary_ppo_residual_gates=tuple(
+            int(value.strip())
+            for value in args.secondary_ppo_residual_gates.split(",")
+            if value.strip()
+        ),
         ppo_residual_schedule=args.ppo_residual_schedule,
         champion_demo_path=args.interleave_champion_demo,
         champion_config_path=args.interleave_champion_config,
@@ -4189,6 +4274,9 @@ def main() -> int:
     ).encode()).hexdigest()
     candidate_schedule_hash = sha256_file(args.ppo_residual_schedule)
     actor_artifact_hash = sha256_file(args.ppo_residual_checkpoint)
+    secondary_actor_artifact_hash = sha256_file(
+        args.secondary_ppo_residual_checkpoint
+    )
     candidate_reference_hash = sha256_file(args.demo)
     champion_reference_hash = sha256_file(args.interleave_champion_demo)
     champion_config_hash = sha256_file(args.interleave_champion_config)
@@ -4196,6 +4284,7 @@ def main() -> int:
         "config_sha256": config_hash,
         "candidate_schedule_sha256": candidate_schedule_hash,
         "actor_sha256": actor_artifact_hash,
+        "secondary_actor_sha256": secondary_actor_artifact_hash,
         "candidate_reference_sha256": candidate_reference_hash,
         "champion_reference_sha256": champion_reference_hash,
         "champion_config_sha256": champion_config_hash,
