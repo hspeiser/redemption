@@ -169,6 +169,8 @@ class BatchedLiveTeacher:
         gate_map = json.loads(map_file.read_text())["gates"]
         self.gate_pos_map = np.asarray(
             [g["pos"] for g in gate_map[:17]], np.float32)
+        self.gate_pos_map_t = torch.tensor(self.gate_pos_map,
+                                           device=dev)
         quat = np.asarray([g["quat_wxyz"] for g in gate_map[:17]], float)
         gate_rot = Rotation.from_quat(np.stack(
             [quat[:, 1], quat[:, 2], quat[:, 3], quat[:, 0]], axis=1
@@ -390,7 +392,14 @@ class BatchedLiveTeacher:
             target = torch.zeros(n, dtype=torch.long, device=dev)
         g = torch.clamp(target, 0, N_RACE_GATES - 1)
 
-        gate_vec_world = self.demo_gate_position[g] - p
+        # DEPLOYMENT SEMANTICS (shadow-probe finding): the live obs
+        # gate-relative vector comes from MAP gates (localizer), while
+        # the learner reconstructs position against demo_gate_position
+        # (median of demo rows). The deployed controller therefore acts
+        # at p + (demo_gp - map_gp) -- a systematic few-cm offset. The
+        # port must reproduce that reconstruction, not consume the env
+        # position directly.
+        gate_vec_world = self.gate_pos_map_t[g] - p
         # gate-change cursor reset
         changed = self.ref_gate != g
         self.cursor = torch.where(changed, self.seg_start[g], self.cursor)

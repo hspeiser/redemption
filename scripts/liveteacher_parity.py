@@ -68,7 +68,10 @@ def main() -> int:
     n_steps = len(obs)
     teacher = BatchedLiveTeacher(config_path, n_envs=1,
                                  device=args.device)
-    gate_pos = teacher.demo_gate_position.cpu().numpy()
+    # invert positions with MAP gates: the port's deployment-semantics
+    # reconstruction (map-gate rel -> demo-gate position) then round-
+    # trips the recorded observation exactly
+    gate_pos = teacher.gate_pos_map
 
     rot = observation_rotation_batch(obs)
     gate = np.asarray(fx["gate_index"], np.int64)
