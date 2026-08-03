@@ -44,6 +44,27 @@ Golden-action acceptance requires:
    feedback terms, blend, and residual correction so the first divergence is
    attributable.
 
+## Same-state shadow probe
+
+Golden-action replay verifies controller composition on recorded inputs, but
+it cannot prove that the vectorized evaluator constructs those inputs with the
+same semantics during a rollout. Before paired outcome audits, run
+`scripts/liveteacher_shadow_probe.py` for at least 64 worlds. The trusted scalar
+learner drives each world while the batched port computes a shadow action from
+the identical position belief, velocity, attitude, previous action, and target.
+
+Acceptance requires zero worlds with an action divergence above `1e-4` and a
+p95 per-world maximum action error no greater than `1e-5`. Both controllers,
+the plant, and the residual ensemble must run on the same device. A CPU and a
+CUDA rollout seeded with the same integer do not share an equivalent random
+tape and are not paired evidence.
+
+This layer is permanent. It caught a deployment-only position reconstruction
+rule that golden replay cancelled by construction: the localizer's gate vector
+uses runtime-map gate centers, while the learner rebuilds position using demo
+gate centers. The batched controller must therefore reproduce
+`p + (demo_gate - map_gate)` before selecting and tracking its reference.
+
 ## Paired rollout comparator
 
 `scripts/compare_vq2_paired_audits.py` consumes baseline and port per-world
@@ -94,6 +115,7 @@ After producing both NPZ files, enforce the staged gate with:
 ```powershell
 .\.venv-train\Scripts\python.exe scripts\accept_vq2_layer2_parity.py `
   --layer1 data\lineopt\liveteacher_parity_layer1.json `
+  --shadow data\lineopt\liveteacher_shadow_probe.json `
   --baseline path\to\baseline_worlds.npz `
   --candidate path\to\port_worlds.npz `
   --stage development `
@@ -104,6 +126,33 @@ Change `--stage` to `final` only for the fresh 768+-world audit. The acceptance
 report hashes Layer 1 and both world artifacts, records the Git revision, and
 exits non-zero unless all three statistical criteria pass. Candidate search
 remains blocked until that report says `PASS: true`.
+
+## Resolved parity failures
+
+The certification campaign closed three independent defects:
+
+- A gate-5/6 action residue came from evaluating the wrong configuration;
+  SHA-256 config gating exposed the missing per-gate lateral offsets.
+- The first-step attitude discrepancy came from a float32 SO(3) logarithm at
+  tiny angles. Using the analytic half-angle limit reduced Layer-1 maximum
+  action error to `3.64e-6` across all 1,067 recorded steps.
+- The same-state shadow probe exposed the runtime-map versus demo-gate
+  position reconstruction described above. After reproducing that behavior,
+  the 256-world development audit matched exactly: the same 17 finishes,
+  identical `35.933 s` median, zero discordant worlds, and terminal-histogram
+  Jensen-Shannon distance `0.0`.
+
+These results certify controller parity. They do not claim that the learned
+world ensemble is perfectly calibrated to the live simulator.
+
+Final certification on the untouched 768-world seed also passed exactly:
+both implementations finished the same 46 worlds (`5.9896%`), shared a
+`35.400 s` median and `36.533 s` p90, had zero discordant outcomes, and
+produced identical terminal-gate histograms (`JS = 0.0`). The permanent
+64-world shadow gate also passed with zero divergences above `1e-4` and a
+`1.55e-6` p95 per-world maximum action error. Deployment-faithful candidate
+search is therefore unblocked; the frozen 35.37-second champion remains the
+promotion baseline.
 
 ## Gate-10 handoff pool
 

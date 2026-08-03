@@ -1,0 +1,23 @@
+{
+ "schema": "vq2_controller_shadow_parity_v1",
+ "config": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_191537\\config.json",
+ "config_sha256": "dd45eeb71bf6d8c0e90411a3717af0d8f143d99aa49bf96aa56421ab76b34796",
+ "ensemble": [
+  "D:\\ai-gp\\worldmodel\\v25_allgate_v8\\residual_ensemble_v25.pt",
+  "D:\\ai-gp\\worldmodel\\v28_allgate_registry_flywheel\\residual_ensemble_v28.pt",
+  "D:\\ai-gp\\worldmodel\\v30_allgate_registry_flywheel\\residual_ensemble_v30.pt"
+ ],
+ "device": "cpu",
+ "seed": 20261219,
+ "worlds": 64,
+ "steps": 1071,
+ "pct_worlds_diverged_1e-4": 0.0,
+ "pct_worlds_diverged_1e-2": 0.0,
+ "first_small_step_p50": null,
+ "first_big_step_p50": null,
+ "first_divergence_gate_hist": {},
+ "diff_at_first_p50": null,
+ "max_diff_p50": 6.258487701416016e-07,
+ "max_diff_p95": 1.554936170578002e-06,
+ "PASS": true
+}

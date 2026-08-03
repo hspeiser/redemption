@@ -23,7 +23,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -38,11 +41,22 @@ from aigp.fastsim.env import (  # noqa: E402
     ACT_DIM, FastEnvConfig, FastVQ2Env, HOLE_HALF,
 )
 from aigp.fastsim.sysid import SurrogateModel  # noqa: E402
+from aigp.fastsim.liveteacher import (  # noqa: E402
+    BatchedLiveTeacher,
+    observation_rotation_batch,
+)
+from aigp.fastsim.worldmodel import (  # noqa: E402
+    ResidualEnsemble,
+    ResidualEnsemblePool,
+)
 from aigp.fastsim.lineopt import (  # noqa: E402
     DT, BatchedFlatRefController, LineConfig, build_reference,
     load_oriented_gates,
 )
 from aigp.vq2_map import gate_quads_world_vq2  # noqa: E402
+from scripts.build_vq2_suffix_reference_demo import (  # noqa: E402
+    build_suffix_demo,
+)
 
 SUFFIX_FIRST = 11
 N_SUFFIX = 6            # gates 11..16
@@ -142,8 +156,35 @@ def main() -> int:
     ap.add_argument("--pop", type=int, default=24)
     ap.add_argument("--elite", type=int, default=6)
     ap.add_argument("--iters", type=int, default=10)
+    ap.add_argument("--final-envs", type=int, default=512)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument(
+        "--live-teacher-config", type=Path,
+        help=("Use the parity-certified deployed controller instead of the "
+              "legacy geometric tracker."),
+    )
+    ap.add_argument(
+        "--exact-search-space", choices=("config", "line"),
+        default="config",
+        help=("config perturbs the frozen controller's per-gate offsets and "
+              "velocity scales around the exact champion; line rebuilds a "
+              "replacement suffix demo and is retained for diagnostics."),
+    )
+    ap.add_argument(
+        "--ensemble", nargs="+",
+        help="Residual ensembles required by --live-teacher-config.",
+    )
+    ap.add_argument(
+        "--prefix-demo", type=Path,
+        help="Frozen full-course champion demo to splice through gate 10.",
+    )
+    ap.add_argument(
+        "--handoff-pool", type=Path, default=(
+            REPO / "data/lineopt/handoff_pool_13finish.json"
+        ),
+    )
+    ap.add_argument("--bridge-rows", type=int, default=30)
     ap.add_argument("--out-prefix", required=True)
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
@@ -151,7 +192,9 @@ def main() -> int:
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
     if args.smoke:
-        args.n_envs, args.pop, args.iters = 24, 4, 2
+        args.n_envs, args.pop, args.iters, args.final_envs = 24, 4, 2, 64
+    if args.live_teacher_config and not args.ensemble:
+        ap.error("--live-teacher-config requires --ensemble")
 
     handoff = json.loads(Path(args.handoff).read_text())
     start_p = np.asarray(handoff["position"], float)
@@ -184,6 +227,7 @@ def main() -> int:
     seed_off = theta_full[:17 * 2].reshape(17, 2)[
         SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX]
     seed_sc = theta_full[17 * 2:][SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX + 1]
+    seed_line_sc = seed_sc.copy()
 
     lcfg = LineConfig(speed_cap=12.0, clearance=0.15,
                       launch_speed=float(handoff["speed"]))
@@ -193,7 +237,80 @@ def main() -> int:
         lcfg.a_fwd, lcfg.a_brk = 6.5, 7.0
 
     model = SurrogateModel.load(args.model)
-    off_lim = HOLE_HALF - 0.15
+    exact_ensemble = None
+    exact_handoffs = None
+    exact_prefix = None
+    exact_config_doc = None
+    exact_demo_covis = None
+    exact_tmp = None
+    if args.live_teacher_config:
+        exact_config_doc = json.loads(args.live_teacher_config.read_text())
+        live_cfg = exact_config_doc["args"]
+        exact_prefix = args.prefix_demo or Path(live_cfg["demo"])
+        demo = np.load(exact_prefix, allow_pickle=False)
+        demo_gate = np.asarray(demo["gate_index"], np.int64)
+        suffix_rows = np.flatnonzero(demo_gate >= SUFFIX_FIRST)
+        suffix_gate = demo_gate[suffix_rows] - SUFFIX_FIRST
+        suffix_pos = np.asarray(demo["position"], np.float64)[suffix_rows]
+        suffix_R = observation_rotation_batch(
+            np.asarray(demo["observation"], np.float32)[suffix_rows]
+        )
+        suffix_t_gate = np.zeros(N_SUFFIX, np.float64)
+        for local_gate in range(N_SUFFIX):
+            rows_for_gate = np.flatnonzero(suffix_gate == local_gate)
+            if not len(rows_for_gate):
+                raise SystemExit(
+                    f"champion demo lacks suffix gate {local_gate + SUFFIX_FIRST}"
+                )
+            suffix_t_gate[local_gate] = rows_for_gate[0] * DT
+        exact_demo_covis = {
+            "pos": suffix_pos,
+            "R": suffix_R,
+            "gate": suffix_gate,
+            "t_gate": suffix_t_gate,
+        }
+        rows = json.loads(args.handoff_pool.read_text())
+        exact_handoffs = {
+            "pos": np.asarray([row["position"] for row in rows], np.float32),
+            "vel": np.asarray([row["velocity"] for row in rows], np.float32),
+            "quat": np.asarray([row["quat_wxyz"] for row in rows], np.float32),
+            "gate": np.full(len(rows), SUFFIX_FIRST, np.float32),
+        }
+        loaded = [
+            ResidualEnsemble.load(path, str(device))
+            for path in args.ensemble
+        ]
+        members = [item[0] for item in loaded]
+        exact_ensemble = (
+            members[0] if len(members) == 1
+            else ResidualEnsemblePool(members).to(device)
+        )
+        exact_ensemble.eval()
+        exact_tmp = Path(tempfile.mkdtemp(prefix="vq2_suffix_exact_"))
+
+        def parsed_values(name, default):
+            values = np.full(17, float(default), np.float64)
+            for item in str(live_cfg.get(name, "") or "").split(","):
+                if item.strip():
+                    gate, value = item.split(":", 1)
+                    values[int(gate)] = float(value)
+            return values
+
+        if args.exact_search_space == "config":
+            lat = parsed_values("reference_lateral_offsets", 0.0)
+            vert = parsed_values("reference_vertical_offsets", 0.0)
+            seed_off = np.stack([lat, vert], axis=1)[
+                SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX
+            ]
+            vel_default = float(live_cfg.get("reference_velocity_scale", 1.0))
+            seed_sc = parsed_values(
+                "reference_velocity_scales", vel_default
+            )[SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX]
+    off_lim = (
+        0.35 if args.live_teacher_config
+        and args.exact_search_space == "config"
+        else HOLE_HALF - 0.15
+    )
     g15_local = 15 - SUFFIX_FIRST
     g15_lo = seed_off[g15_local] - 0.15
     g15_hi = seed_off[g15_local] + 0.15
@@ -205,16 +322,26 @@ def main() -> int:
         if args.mode == "geometry":
             sc = seed_sc.copy()
         else:
-            sc = np.clip(theta[N_SUFFIX * 2:], 0.35, 1.0)
+            bounds = (
+                (0.80, 1.30) if args.live_teacher_config
+                and args.exact_search_space == "config"
+                else (0.35, 1.0)
+            )
+            sc = np.clip(theta[N_SUFFIX * 2:], *bounds)
         return off, sc
 
+    speed_params = (
+        N_SUFFIX if args.live_teacher_config
+        and args.exact_search_space == "config"
+        else N_SUFFIX + 1
+    )
     n_par = N_SUFFIX * 2 + (0 if args.mode == "geometry"
-                            else N_SUFFIX + 1)
+                            else speed_params)
     mean = seed_off.flatten().copy()
     sd = np.full(N_SUFFIX * 2, 0.16)
     if args.mode != "geometry":
         mean = np.concatenate([mean, seed_sc])
-        sd = np.concatenate([sd, np.full(N_SUFFIX + 1, 0.08)])
+        sd = np.concatenate([sd, np.full(speed_params, 0.08)])
 
     time_w = {"geometry": 8.0, "timing": 20.0, "aggressive": 45.0}[args.mode]
     cov_w = {"geometry": 250.0, "timing": 200.0, "aggressive": 100.0}[args.mode]
@@ -226,7 +353,195 @@ def main() -> int:
         "gate": np.full(8, SUFFIX_FIRST, np.float32),
     }
 
-    def evaluate_pop(refs):
+    exact_eval_round = 0
+
+    def exact_covis_reference(off):
+        ref = {key: np.array(value, copy=True)
+               for key, value in exact_demo_covis.items()}
+        gate_rows = ref["gate"].astype(np.int64)
+        for local_gate in range(N_SUFFIX):
+            rows = np.flatnonzero(gate_rows == local_gate)
+            phase = np.linspace(0.0, 1.0, len(rows), dtype=np.float64)
+            prev = off[local_gate - 1] if local_gate else np.zeros(2)
+            local = prev[None] + phase[:, None] * (
+                off[local_gate] - prev
+            )[None]
+            world_offset = (
+                local[:, :1] * gR_s[local_gate, :, 0][None]
+                + local[:, 1:] * gR_s[local_gate, :, 2][None]
+            )
+            ref["pos"][rows] += world_offset
+        return ref
+
+    def materialize_exact_demo(ref, index):
+        ref_path = exact_tmp / f"ref_{index}.npz"
+        suffix_path = exact_tmp / f"suffix_{index}.npz"
+        hybrid_path = exact_tmp / f"hybrid_{index}.npz"
+        np.savez(
+            ref_path,
+            ref_pos=ref["pos"],
+            ref_vel=ref["vel"],
+            ref_quat=ref["quat_wxyz"],
+            ref_gate=ref["gate"] + SUFFIX_FIRST,
+        )
+        np.savez(
+            suffix_path,
+            **build_suffix_demo(ref_path, Path(args.map), Path(args.model)),
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                str(REPO / "scripts/build_vq2_hybrid_suffix_demo.py"),
+                "--prefix", str(exact_prefix),
+                "--suffix", str(suffix_path),
+                "--out", str(hybrid_path),
+                "--map", str(args.map),
+                "--suffix-start-gate", str(SUFFIX_FIRST),
+                "--bridge-rows", str(args.bridge_rows),
+            ],
+            cwd=REPO,
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+        return hybrid_path
+
+    def format_gate_values(original, updates):
+        values = {}
+        for item in str(original or "").split(","):
+            if item.strip():
+                gate, value = item.split(":", 1)
+                values[int(gate)] = float(value)
+        values.update(updates)
+        return ",".join(f"{gate}:{values[gate]:.9g}" for gate in sorted(values))
+
+    def materialize_exact_config(theta, index):
+        off, sc = unpack(theta)
+        document = json.loads(json.dumps(exact_config_doc))
+        cfg_args = document["args"]
+        gates = range(SUFFIX_FIRST, SUFFIX_FIRST + N_SUFFIX)
+        cfg_args["reference_lateral_offsets"] = format_gate_values(
+            cfg_args.get("reference_lateral_offsets", ""),
+            {gate: float(off[j, 0]) for j, gate in enumerate(gates)},
+        )
+        cfg_args["reference_vertical_offsets"] = format_gate_values(
+            cfg_args.get("reference_vertical_offsets", ""),
+            {gate: float(off[j, 1]) for j, gate in enumerate(gates)},
+        )
+        if args.mode != "geometry":
+            cfg_args["reference_velocity_scales"] = format_gate_values(
+                cfg_args.get("reference_velocity_scales", ""),
+                {gate: float(sc[j]) for j, gate in enumerate(gates)},
+            )
+        path = exact_tmp / f"config_{index}.json"
+        path.write_text(json.dumps(document, indent=2))
+        return path
+
+    def evaluate_exact(refs, thetas):
+        nonlocal exact_eval_round
+        per = args.n_envs
+        out = []
+        world_seed = args.seed + 1009 * exact_eval_round
+        exact_eval_round += 1
+        for ci, (ref, theta) in enumerate(zip(refs, thetas)):
+            if args.exact_search_space == "config":
+                config_path = materialize_exact_config(theta, ci)
+                demo_path = exact_prefix
+            else:
+                config_path = args.live_teacher_config
+                demo_path = materialize_exact_demo(ref, ci)
+            cfg = FastEnvConfig(
+                n_envs=per,
+                race_gates=17,
+                random_start_frac=1.0,
+                spawn_at_rest=False,
+                max_episode_s=20.0,
+                auto_reset=False,
+                speed_cap_mps=12.5,
+                act_delay_steps_min=0,
+                act_delay_steps_max=0,
+                residual_scale=0.0,
+                reloc_events=True,
+                fov_vision=True,
+                world_model_aleatoric_scale=1.5,
+                demo_corridor_m=999.0,
+                start_noise_pos_m=0.08,
+                start_noise_vel_mps=0.20,
+            )
+            cfg.apply_multigate10hz()
+            cfg.dr_thrust = (0.97, 1.03)
+            cfg.dr_rate_gain = (0.95, 1.05)
+            cfg.dr_rate_tau = (0.90, 1.10)
+            cfg.dr_drag = (0.20, 0.35)
+            backbone = BatchedLiveTeacher(
+                config_path,
+                n_envs=per,
+                device=str(device),
+                demo_path=demo_path,
+            )
+            torch.manual_seed(world_seed)
+            env = FastVQ2Env(
+                model,
+                args.map,
+                demo_states=exact_handoffs,
+                config=cfg,
+                device=str(device),
+                obstacles_path=args.obstacles or None,
+                backbone=backbone,
+                residual_ensemble=exact_ensemble,
+            )
+            zeros = torch.zeros(per, ACT_DIM, device=device)
+            fin = torch.zeros(per, dtype=torch.bool, device=device)
+            fail = torch.zeros_like(fin)
+            fail_gate = torch.full(
+                (per,), -1, dtype=torch.long, device=device
+            )
+            t_fin = torch.full((per,), float("nan"), device=device)
+            t12 = torch.zeros(per, device=device)
+            t13 = torch.zeros(per, device=device)
+            with torch.no_grad():
+                for _ in range(int(cfg.max_episode_s * cfg.control_hz) + 1):
+                    _o, _r, done, info = env.step(zeros)
+                    live = ~(fin | fail)
+                    passed = info["passed"] & live
+                    t12 = torch.where(
+                        passed & (info["target"] == 13), info["t_ep"], t12
+                    )
+                    t13 = torch.where(
+                        passed & (info["target"] == 14), info["t_ep"], t13
+                    )
+                    newf = info["finished"] & live
+                    t_fin = torch.where(newf, info["t_ep"], t_fin)
+                    fin |= newf
+                    newfail = done & live & ~info["finished"]
+                    fail_gate = torch.where(
+                        newfail, info["target"], fail_gate
+                    )
+                    fail |= newfail
+                    if bool((fin | fail).all()):
+                        break
+            split = t13 - t12
+            valid_split = fin & (split > 0)
+            hist = {
+                str(g): int((fail_gate == g).sum())
+                for g in torch.unique(fail_gate[fail]).cpu().tolist()
+            }
+            out.append({
+                "finish_rate": float(fin.float().mean()),
+                "t_med": float(t_fin[fin].median()) if bool(fin.any()) else None,
+                "g13_split_med": (
+                    float(split[valid_split].median())
+                    if bool(valid_split.any()) else None
+                ),
+                "failure_gate_hist": hist,
+            })
+            del env, backbone
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+        return out
+
+    def evaluate_pop(refs, thetas=None):
+        if args.live_teacher_config:
+            return evaluate_exact(refs, thetas)
         per = args.n_envs
         C = len(refs)
         cfg = FastEnvConfig(
@@ -299,11 +614,20 @@ def main() -> int:
         refs, covs = [], []
         for th in thetas:
             off, sc = unpack(th)
-            ref = build_reference(gp_s, gR_s, off, sc, lcfg)
+            line_sc = sc if len(sc) == N_SUFFIX + 1 else np.concatenate(
+                [sc, seed_line_sc[-1:]]
+            )
+            ref = build_reference(gp_s, gR_s, off, line_sc, lcfg)
             refs.append(ref)
-            covs.append(covis_metrics(ref, all_corners, all_centers,
+            cov_ref = (
+                exact_covis_reference(off)
+                if args.live_teacher_config
+                and args.exact_search_space == "config"
+                else ref
+            )
+            covs.append(covis_metrics(cov_ref, all_corners, all_centers,
                                       all_normals, K, R_cb, wdet))
-        mets = evaluate_pop(refs)
+        mets = evaluate_pop(refs, thetas)
         results = []
         for th, ref, cov, m in zip(thetas, refs, covs, mets):
             t_med = m["t_med"] if m["t_med"] else 60.0
@@ -327,11 +651,19 @@ def main() -> int:
 
     # final: rebuild champion, large eval, dump artifacts
     off, sc = unpack(best["theta"])
-    ref = build_reference(gp_s, gR_s, off, sc, lcfg)
-    cov = covis_metrics(ref, all_corners, all_centers, all_normals,
+    line_sc = sc if len(sc) == N_SUFFIX + 1 else np.concatenate(
+        [sc, seed_line_sc[-1:]]
+    )
+    ref = build_reference(gp_s, gR_s, off, line_sc, lcfg)
+    cov_ref = (
+        exact_covis_reference(off)
+        if args.live_teacher_config and args.exact_search_space == "config"
+        else ref
+    )
+    cov = covis_metrics(cov_ref, all_corners, all_centers, all_normals,
                         K, R_cb, wdet)
-    args.n_envs = 512
-    final = evaluate_pop([ref])[0]
+    args.n_envs = args.final_envs
+    final = evaluate_pop([ref], [best["theta"]])[0]
     out_prefix = Path(args.out_prefix)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     np.savez(f"{out_prefix}_best.npz",
@@ -343,15 +675,21 @@ def main() -> int:
         "handoff": handoff["source"],
         "planned_suffix_s": ref["planned_lap_s"],
         "coverage": cov,
-        "final_512": final,
+        "final_worlds": args.final_envs,
+        "final": final,
         "history": history,
         "suffix_offsets": off.tolist(),
         "suffix_scales": sc.tolist(),
     }
     Path(f"{out_prefix}_report.json").write_text(
         json.dumps(report, indent=1))
+    if args.live_teacher_config and args.exact_search_space == "config":
+        winner_config = materialize_exact_config(best["theta"], "winner")
+        shutil.copy2(winner_config, f"{out_prefix}_config.json")
     print(json.dumps({k: v for k, v in report.items()
                       if k != "history"}, indent=1))
+    if exact_tmp is not None:
+        shutil.rmtree(exact_tmp)
     return 0
 
 

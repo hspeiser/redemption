@@ -1,0 +1,79 @@
+{
+  "schema": "vq2_controller_layer2_parity_v1",
+  "stage": "development",
+  "minimum_worlds": 256,
+  "git_revision": "43c59cd9c6ca86dfdfb489b198c25faef5e38146",
+  "layer1": {
+    "path": "C:\\Users\\henry\\Desktop\\ai-gp\\data\\lineopt\\liveteacher_parity_layer1.json",
+    "sha256": "faa1d497cbc632052082a9556a6b6efcd50287957670944cbef95adf768a785b",
+    "config_sha256": "dd45eeb71bf6d8c0e90411a3717af0d8f143d99aa49bf96aa56421ab76b34796",
+    "action_max_abs_error": 3.635883331298828e-06
+  },
+  "baseline": {
+    "path": "C:\\Users\\henry\\Desktop\\ai-gp\\data\\lineopt\\l2_dev_baseline.npz",
+    "sha256": "174084fe38d51850571e178c20e96377b963aadb8dba427070a0857c993da3ea"
+  },
+  "candidate": {
+    "path": "C:\\Users\\henry\\Desktop\\ai-gp\\data\\lineopt\\l2_dev_port.npz",
+    "sha256": "3c3dbfad5376ef0402149903fdcb8cb0902b503ef98a879b08ea31fe9df8d8da"
+  },
+  "statistics": {
+    "worlds": 256,
+    "baseline_finish_rate": 0.06640625,
+    "candidate_finish_rate": 0.06640625,
+    "paired_finish_rate_delta": 0.0,
+    "paired_finish_rate_delta_ci95": [
+      0.0,
+      0.0
+    ],
+    "candidate_only_finishes": 0,
+    "baseline_only_finishes": 0,
+    "both_finished": 17,
+    "paired_finish_time_delta_median_s": 0.0,
+    "paired_finish_time_delta_ci95_s": [
+      0.0,
+      0.0
+    ],
+    "baseline_terminal_histogram": {
+      "-1": 17,
+      "0": 1,
+      "1": 19,
+      "2": 12,
+      "3": 66,
+      "4": 30,
+      "5": 17,
+      "6": 15,
+      "7": 30,
+      "8": 23,
+      "9": 23,
+      "13": 2,
+      "16": 1
+    },
+    "candidate_terminal_histogram": {
+      "-1": 17,
+      "0": 1,
+      "1": 19,
+      "2": 12,
+      "3": 66,
+      "4": 30,
+      "5": 17,
+      "6": 15,
+      "7": 30,
+      "8": 23,
+      "9": 23,
+      "13": 2,
+      "16": 1
+    },
+    "terminal_histogram_js_bits": 0.0,
+    "acceptance": {
+      "finish_rate_tolerance": 0.03,
+      "finish_rate_pass": true,
+      "finish_time_tolerance_s": 0.15,
+      "finish_time_pass": true,
+      "terminal_js_tolerance_bits": 0.02,
+      "terminal_histogram_pass": true,
+      "pass": true
+    }
+  },
+  "PASS": true
+}
