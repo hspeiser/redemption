@@ -215,9 +215,16 @@ def main() -> int:
         help=("Number of search candidates to rerank together on the fresh "
               "final-world pool before selecting the winner."),
     )
+    ap.add_argument(
+        "--parallel-evals", type=int, default=1,
+        help=("Exact-config candidates evaluated concurrently. Use only on "
+              "a GPU with enough memory for multiple model copies."),
+    )
     ap.add_argument("--out-prefix", required=True)
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
+    if args.parallel_evals < 1:
+        ap.error("--parallel-evals must be at least 1")
     device = torch.device(args.device)
     torch.manual_seed(args.seed)
     rng = np.random.default_rng(args.seed)
@@ -307,16 +314,17 @@ def main() -> int:
             "quat": np.asarray([row["quat_wxyz"] for row in rows], np.float32),
             "gate": np.full(len(rows), SUFFIX_FIRST, np.float32),
         }
-        loaded = [
-            ResidualEnsemble.load(path, str(device))
-            for path in args.ensemble
-        ]
-        members = [item[0] for item in loaded]
-        exact_ensemble = (
-            members[0] if len(members) == 1
-            else ResidualEnsemblePool(members).to(device)
-        )
-        exact_ensemble.eval()
+        if args.parallel_evals <= 1:
+            loaded = [
+                ResidualEnsemble.load(path, str(device))
+                for path in args.ensemble
+            ]
+            members = [item[0] for item in loaded]
+            exact_ensemble = (
+                members[0] if len(members) == 1
+                else ResidualEnsemblePool(members).to(device)
+            )
+            exact_ensemble.eval()
         exact_tmp = Path(tempfile.mkdtemp(prefix="vq2_suffix_exact_"))
 
         def parsed_values(name, default):
@@ -580,6 +588,94 @@ def main() -> int:
         out = []
         world_seed = args.seed + 1009 * exact_eval_round
         exact_eval_round += 1
+        if args.parallel_evals > 1:
+            if args.exact_search_space != "config":
+                raise RuntimeError(
+                    "parallel exact evaluation requires config search space"
+                )
+            jobs = []
+            output_paths = []
+            for ci, theta in enumerate(thetas):
+                config_path = materialize_exact_config(theta, ci)
+                output_path = exact_tmp / (
+                    f"parallel_{exact_eval_round}_{ci}.npz"
+                )
+                command = [
+                    sys.executable,
+                    str(REPO / "scripts/liveteacher_layer2.py"),
+                    "--config", str(config_path),
+                    "--model", str(args.model),
+                    "--ensemble", *[str(path) for path in args.ensemble],
+                    "--worlds", str(per),
+                    "--seed", str(world_seed),
+                    "--speed-cap", "12.5",
+                    "--aleatoric-scale", "1.5",
+                    "--start-noise-pos-m", "0.08",
+                    "--start-noise-vel-mps", "0.20",
+                    "--max-episode-s", "20.0",
+                    "--demo", str(exact_prefix),
+                    "--handoff-pool", str(args.handoff_pool),
+                    "--device", str(device),
+                    "--controller", "batched",
+                    "--out", str(output_path),
+                ]
+                jobs.append(command)
+                output_paths.append(output_path)
+
+            for begin in range(0, len(jobs), args.parallel_evals):
+                processes = [
+                    subprocess.Popen(
+                        command,
+                        cwd=REPO,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                    for command in jobs[begin:begin + args.parallel_evals]
+                ]
+                for process in processes:
+                    _stdout, stderr = process.communicate()
+                    if process.returncode:
+                        raise RuntimeError(
+                            "parallel exact evaluator failed:\n" + stderr
+                        )
+
+            for output_path in output_paths:
+                with np.load(output_path, allow_pickle=False) as payload:
+                    finished = np.asarray(payload["finished"], bool)
+                    finish_time = np.asarray(
+                        payload["finish_time_s"], float
+                    )
+                    failure_gate = np.asarray(
+                        payload["failure_gate"], int
+                    )
+                    crossing_time = np.asarray(
+                        payload["crossing_time_s"], float
+                    )
+                valid_split = (
+                    finished
+                    & np.isfinite(crossing_time[:, 12])
+                    & np.isfinite(crossing_time[:, 13])
+                )
+                hist = {
+                    str(int(gate)): int(np.sum(failure_gate == gate))
+                    for gate in np.unique(failure_gate[failure_gate >= 0])
+                }
+                out.append({
+                    "finish_rate": float(np.mean(finished)),
+                    "t_med": (
+                        float(np.median(finish_time[finished]))
+                        if np.any(finished) else None
+                    ),
+                    "g13_split_med": (
+                        float(np.median(
+                            crossing_time[valid_split, 13]
+                            - crossing_time[valid_split, 12]
+                        )) if np.any(valid_split) else None
+                    ),
+                    "failure_gate_hist": hist,
+                })
+            return out
         for ci, (ref, theta) in enumerate(zip(refs, thetas)):
             if args.exact_search_space == "config":
                 config_path = materialize_exact_config(theta, ci)

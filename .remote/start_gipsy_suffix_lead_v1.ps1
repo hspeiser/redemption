@@ -10,6 +10,7 @@ $arguments = @(
     "--lead-gates", "11,12,15,16",
     "--lead-max", "8",
     "--finalists", "8",
+    "--parallel-evals", "4",
     "--reliability-floor", "0.70",
     "--model", "data\fastsim_model_v3_live.json",
     "--live-teacher-config", "worldmodel\gipsy_geometry_config.json",

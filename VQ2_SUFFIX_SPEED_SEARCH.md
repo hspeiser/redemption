@@ -1,6 +1,7 @@
 # VQ2 exact-controller suffix speed search
 
-Status: offline candidate certified; live ABBA not yet run.
+Status: offline candidate certified; first live ABBA campaign was
+prefix-limited and produced no candidate suffix exposure.
 
 The frozen live record is 35.374649 s. Its gate-10-to-finish suffix is
 approximately 15.1 s. Every result below uses the deployment-parity
@@ -92,3 +93,17 @@ C849A521BFABCD5AC21D352BE6B96915D45447DBCF0B347F9FD75C75AA62CD60
    record champion, candidate, candidate, record champion.
 5. Promote only with official timing, timing-health pass, no safety regression,
    and hash-frozen config.
+
+## First live ABBA campaign
+
+The candidate was tested in protected A-B-B-A order with full recordings and
+automatic timing-health aborts. Across the first 23 attempted flights, only one
+run reached the suffix: a protected-champion arm reached gate 12 and crashed.
+No candidate arm reached gate 11, so there is no valid live suffix-time
+comparison yet. Candidate and champion use identical controls before gate 11;
+the early gate-2/4/5 failures therefore do not identify a candidate regression.
+
+The final block correctly aborted after two consecutive unhealthy episodes:
+sim-step p95 rose from approximately 42 ms to 72 ms and then 117 ms, with a
+365 ms maximum. Those episodes are quarantined. The simulator must be manually
+relaunched before the next live ABBA block; the harness does not restart it.

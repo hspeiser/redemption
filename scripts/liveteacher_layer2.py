@@ -59,6 +59,8 @@ def main() -> int:
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--speed-cap", type=float, default=12.5)
     ap.add_argument("--aleatoric-scale", type=float, default=1.5)
+    ap.add_argument("--start-noise-pos-m", type=float)
+    ap.add_argument("--start-noise-vel-mps", type=float)
     ap.add_argument("--impulse-rate-hz", type=float, default=0.0)
     ap.add_argument("--max-episode-s", type=float, default=45.0)
     ap.add_argument(
@@ -107,6 +109,14 @@ def main() -> int:
         impulse_vertical_scale=0.35,
         # Empirical handoff rows are a start-state pool, not a full path.
         demo_corridor_m=999.0 if args.handoff_pool else 2.0,
+        start_noise_pos_m=(
+            args.start_noise_pos_m
+            if args.start_noise_pos_m is not None else 0.4
+        ),
+        start_noise_vel_mps=(
+            args.start_noise_vel_mps
+            if args.start_noise_vel_mps is not None else 0.8
+        ),
     )
     cfg.apply_multigate10hz()
     cfg.fov_vision = True
