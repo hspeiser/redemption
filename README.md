@@ -8,11 +8,12 @@ Built for the **AI Grand Prix** (Anduril × DCL) on the VQ2 Arsenal course:
 
 **Official record on the course: 35.374649 s.**
 
-![Two gates locked simultaneously mid-lap](docs/hero_mid.jpg)
+![A full lap from the drone's camera, localizer overlay on](docs/lap.gif)
 
-*Mid-lap, from the drone's own camera with the localizer overlay: two gates
-detected at once (8/8 corners each, 0.4 px residual), 16 corners fused into the
-filter, position uncertainty 2.2 cm.*
+*A complete lap from the drone's own camera, sped up ~7x. Green boxes are gates
+the localizer has locked; the labels show range, bearing, corners matched, and
+pixel residual. Bottom-left ticks along with elapsed time, corners fused, and
+the filter's position uncertainty.*
 
 ---
 
@@ -154,6 +155,12 @@ We made it look at **every visible gate at once**, safely:
 3. Accept a gate only with enough exclusive corners (more required at range).
 4. Solve all accepted gates jointly in one filter update.
 
+![Two gates locked at once](docs/hero_mid.jpg)
+
+*Two gates held simultaneously — 8/8 corners each at 0.4 px, 16 corners fused
+into one filter update, position uncertainty 2.2 cm. A single gate can't do
+this.*
+
 ```mermaid
 xychart-beta
     title "Vision dropout during a lap (9 recorded episodes)"
@@ -257,10 +264,10 @@ data/                     maps, models, demos, optimized lines
 
 ## More footage
 
-Full-lap recordings are kept outside the repo (they're ~50 MB each). The stills
-above are frames from `vq2_HOP_cleanlap.mp4`, a complete lap rendered with the
-live localizer overlay: detected corners, per-gate range and bearing, corner
-residual in pixels, and the filter's own uncertainty ticking along the bottom.
+The animation above is `vq2_HOP_cleanlap.mp4` compressed to a GIF. Full-quality
+recordings are kept outside the repo (~50 MB each) and all carry the same live
+overlay: detected corners, per-gate range and bearing, pixel residual, and the
+filter's own uncertainty.
 
 | Recording | What it shows |
 |---|---|
