@@ -632,7 +632,12 @@ class BatchedLiveTeacher:
         return selected
 
     def _build_obs(self, p, v, R, prev_action, g):
-        """53-D observation exactly as the env/live stack lays it out."""
+        """53-D observation exactly as the env/live stack lays it out.
+
+        Shared with the scalar baseline adapter so the two Layer-2 arms
+        feed their residual actors byte-identical observations and the
+        paired comparison isolates controller implementation only.
+        """
         n = p.shape[0]
         dev = self.dev
         Rt = R.transpose(1, 2)

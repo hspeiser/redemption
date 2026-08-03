@@ -57,6 +57,12 @@ def main() -> int:
     ap.add_argument("--impulse-rate-hz", type=float, default=0.0)
     ap.add_argument("--max-episode-s", type=float, default=45.0)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument(
+        "--controller", choices=("batched", "scalar"), default="batched",
+        help=("batched = BatchedLiveTeacher port (candidate arm); "
+              "scalar = the ACTUAL deployed VQ2SACLearner looped per "
+              "world (trusted baseline arm)"),
+    )
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     device = torch.device(args.device)
@@ -107,8 +113,15 @@ def main() -> int:
     )
     ensemble.eval()
     demo_states = load_demo_states(demo_path, map_path)
-    backbone = BatchedLiveTeacher(args.config, n_envs=n,
-                                  device=str(device))
+    if args.controller == "scalar":
+        from aigp.fastsim.liveteacher_scalar import (
+            ScalarLiveTeacherAdapter,
+        )
+        backbone = ScalarLiveTeacherAdapter(
+            args.config, n_envs=n, device=str(device))
+    else:
+        backbone = BatchedLiveTeacher(args.config, n_envs=n,
+                                      device=str(device))
     # Model/controller construction initializes torch modules. Re-seed at the
     # actual world boundary so both arms receive the same reset and per-step
     # random tape regardless of their implementation details.
@@ -143,6 +156,7 @@ def main() -> int:
     ok = finished
     summary = {
         "worlds": n,
+        "controller": args.controller,
         "seed": args.seed,
         "finish_rate": round(fr, 4),
         "median_s": round(float(lap[ok].median()), 3) if fr else None,
@@ -167,6 +181,7 @@ def main() -> int:
         seed=np.int64(args.seed),
         config=str(args.config),
         ensemble=np.asarray(args.ensemble),
+        controller=str(args.controller),
     )
     Path(str(out_path) + ".summary.json").write_text(
         json.dumps(summary, indent=1))
