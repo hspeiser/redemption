@@ -30,7 +30,12 @@ import torch
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from aigp.fastsim.env import ACT_DIM, FastEnvConfig, FastVQ2Env  # noqa: E402
+from aigp.fastsim.env import (  # noqa: E402
+    ACT_DIM,
+    HOLE_HALF,
+    FastEnvConfig,
+    FastVQ2Env,
+)
 from aigp.fastsim.sysid import SurrogateModel  # noqa: E402
 from aigp.fastsim.worldmodel import (  # noqa: E402
     ResidualEnsemble,
@@ -56,6 +61,15 @@ def main() -> int:
     ap.add_argument("--aleatoric-scale", type=float, default=1.5)
     ap.add_argument("--impulse-rate-hz", type=float, default=0.0)
     ap.add_argument("--max-episode-s", type=float, default=45.0)
+    ap.add_argument(
+        "--demo", type=Path,
+        help="Override the frozen reference demo (batched arm only).",
+    )
+    ap.add_argument(
+        "--handoff-pool", type=Path,
+        help=("Start every world from correlated empirical handoff rows "
+              "instead of the full-course launch state."),
+    )
     ap.add_argument("--device", default="cuda")
     ap.add_argument(
         "--controller", choices=("batched", "scalar"), default="batched",
@@ -70,15 +84,15 @@ def main() -> int:
 
     cfg_json = json.loads(Path(args.config).read_text())["args"]
     map_path = Path(cfg_json["map"])
-    demo_path = Path(cfg_json["demo"])
+    demo_path = args.demo or Path(cfg_json["demo"])
     obstacles = REPO / "data/vq2_obstacles_inflated.json"
 
     n = args.worlds
     cfg = FastEnvConfig(
         n_envs=n,
         race_gates=17,
-        random_start_frac=0.0,
-        spawn_at_rest=True,
+        random_start_frac=1.0 if args.handoff_pool else 0.0,
+        spawn_at_rest=not bool(args.handoff_pool),
         max_episode_s=args.max_episode_s,
         auto_reset=False,
         speed_cap_mps=args.speed_cap,
@@ -91,7 +105,8 @@ def main() -> int:
         impulse_rate_hz=args.impulse_rate_hz,
         impulse_velocity_mps=(0.10, 0.55),
         impulse_vertical_scale=0.35,
-        demo_corridor_m=2.0,
+        # Empirical handoff rows are a start-state pool, not a full path.
+        demo_corridor_m=999.0 if args.handoff_pool else 2.0,
     )
     cfg.apply_multigate10hz()
     cfg.fov_vision = True
@@ -112,16 +127,37 @@ def main() -> int:
         else ResidualEnsemblePool(models).to(device)
     )
     ensemble.eval()
-    demo_states = load_demo_states(demo_path, map_path)
+    if args.handoff_pool:
+        rows = json.loads(args.handoff_pool.read_text())
+        if not isinstance(rows, list) or not rows:
+            raise SystemExit("handoff pool must be a non-empty JSON list")
+        demo_states = {
+            "pos": np.asarray([row["position"] for row in rows], np.float32),
+            "vel": np.asarray([row["velocity"] for row in rows], np.float32),
+            "quat": np.asarray([row["quat_wxyz"] for row in rows], np.float32),
+            "gate": np.asarray(
+                [row.get("gate", 11) for row in rows], np.float32
+            ),
+        }
+    else:
+        demo_states = load_demo_states(demo_path, map_path)
     if args.controller == "scalar":
+        if args.demo:
+            raise SystemExit(
+                "scalar alternate-demo audit requires a derived frozen config"
+            )
         from aigp.fastsim.liveteacher_scalar import (
             ScalarLiveTeacherAdapter,
         )
         backbone = ScalarLiveTeacherAdapter(
             args.config, n_envs=n, device=str(device))
     else:
-        backbone = BatchedLiveTeacher(args.config, n_envs=n,
-                                      device=str(device))
+        backbone = BatchedLiveTeacher(
+            args.config,
+            n_envs=n,
+            device=str(device),
+            demo_path=demo_path,
+        )
     # Model/controller construction initializes torch modules. Re-seed at the
     # actual world boundary so both arms receive the same reset and per-step
     # random tape regardless of their implementation details.
@@ -137,6 +173,7 @@ def main() -> int:
     fail_gate = torch.full((n,), -1, dtype=torch.long, device=device)
     lap = torch.full((n,), float("nan"), device=device)
     alive = torch.zeros(n, device=device)
+    min_clearance = torch.full((n,), float("inf"), device=device)
     dt = 1.0 / cfg.control_hz
     with torch.no_grad():
         for _ in range(int(cfg.max_episode_s * cfg.control_hz) + 1):
@@ -144,6 +181,13 @@ def main() -> int:
             live = ~(finished | failed)
             alive += live.float()
             newf = info["finished"] & live
+            crossed = info["cross_r"] >= 0.0
+            margin = HOLE_HALF - info["cross_r"]
+            min_clearance = torch.where(
+                crossed & live,
+                torch.minimum(min_clearance, margin),
+                min_clearance,
+            )
             lap = torch.where(newf, info["t_ep"], lap)
             finished |= newf
             newfail = done & live & ~info["finished"]
@@ -178,10 +222,16 @@ def main() -> int:
         finished=finished.cpu().numpy(),
         finish_time_s=lap.cpu().numpy(),
         failure_gate=fail_gate.cpu().numpy(),
+        min_clearance_m=min_clearance.cpu().numpy(),
         seed=np.int64(args.seed),
         config=str(args.config),
         ensemble=np.asarray(args.ensemble),
         controller=str(args.controller),
+        device=str(device),
+        demo=str(Path(demo_path).resolve()),
+        handoff_pool=(
+            str(args.handoff_pool.resolve()) if args.handoff_pool else ""
+        ),
     )
     Path(str(out_path) + ".summary.json").write_text(
         json.dumps(summary, indent=1))

@@ -16,6 +16,7 @@ divergence large, systematic gate pattern) from chaotic decorrelation
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -38,6 +39,14 @@ from aigp.fastsim.liveteacher_scalar import (  # noqa: E402
 from scripts.fastsim_train_ppo import load_demo_states  # noqa: E402
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=str(
@@ -57,9 +66,15 @@ def main() -> int:
     ap.add_argument("--speed-cap", type=float, default=12.5)
     ap.add_argument("--aleatoric-scale", type=float, default=1.5)
     ap.add_argument("--max-episode-s", type=float, default=45.0)
+    ap.add_argument(
+        "--device", choices=("cpu", "cuda"), default="cpu",
+        help=("Run both controllers and the environment on this same device. "
+              "Never compare CPU and CUDA arms from seed alone because their "
+              "random-number tapes are not equivalent."),
+    )
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
-    device = torch.device("cpu")
+    device = torch.device(args.device)
     torch.manual_seed(args.seed)
 
     cfg_json = json.loads(Path(args.config).read_text())["args"]
@@ -83,30 +98,30 @@ def main() -> int:
     cfg.dr_drag = (0.20, 0.35)
 
     model = SurrogateModel.load(args.model)
-    loaded = [ResidualEnsemble.load(p, "cpu") for p in args.ensemble]
+    loaded = [ResidualEnsemble.load(p, str(device)) for p in args.ensemble]
     models = [item[0] for item in loaded]
     ensemble = (models[0] if len(models) == 1
-                else ResidualEnsemblePool(models))
+                else ResidualEnsemblePool(models).to(device))
     ensemble.eval()
     demo_states = load_demo_states(demo_path, map_path)
     scalar = ScalarLiveTeacherAdapter(args.config, n_envs=n,
-                                      device="cpu")
-    port = BatchedLiveTeacher(args.config, n_envs=n, device="cpu")
+                                      device=str(device))
+    port = BatchedLiveTeacher(args.config, n_envs=n, device=str(device))
     torch.manual_seed(args.seed)
     env = FastVQ2Env(model, map_path, demo_states=demo_states,
-                     config=cfg, device="cpu",
+                     config=cfg, device=str(device),
                      obstacles_path=REPO / "data"
                      / "vq2_obstacles_inflated.json",
                      backbone=scalar,
                      residual_ensemble=ensemble)
 
-    zeros = torch.zeros(n, ACT_DIM)
+    zeros = torch.zeros(n, ACT_DIM, device=device)
     first_small = np.full(n, -1)
     first_big = np.full(n, -1)
     gate_small = np.full(n, -1)
     diff_at_small = np.zeros(n)
     max_diff = np.zeros(n)
-    done_mask = torch.zeros(n, dtype=torch.bool)
+    done_mask = torch.zeros(n, dtype=torch.bool, device=device)
     step = 0
     with torch.no_grad():
         while step < int(cfg.max_episode_s * 30) and not bool(
@@ -125,11 +140,11 @@ def main() -> int:
             # advanced twice would corrupt).  To avoid double-advance,
             # drive the env manually below with `base` through the
             # residual==backbone trick: temporarily swap backbone out.
-            diff = (shadow - base).abs().max(dim=1).values.numpy()
-            live = (~done_mask).numpy()
+            diff = (shadow - base).abs().max(dim=1).values.cpu().numpy()
+            live = (~done_mask).cpu().numpy()
             upd = live & (first_small < 0) & (diff > 1e-4)
             first_small[upd] = step
-            gate_small[upd] = tg.numpy()[upd]
+            gate_small[upd] = tg.cpu().numpy()[upd]
             diff_at_small[upd] = diff[upd]
             updb = live & (first_big < 0) & (diff > 1e-2)
             first_big[updb] = step
@@ -142,6 +157,12 @@ def main() -> int:
             step += 1
 
     out = {
+        "schema": "vq2_controller_shadow_parity_v1",
+        "config": str(Path(args.config).resolve()),
+        "config_sha256": sha256(Path(args.config)),
+        "ensemble": [str(Path(p).resolve()) for p in args.ensemble],
+        "device": str(device),
+        "seed": args.seed,
         "worlds": n,
         "steps": step,
         "pct_worlds_diverged_1e-4": float((first_small >= 0).mean()),
@@ -162,9 +183,14 @@ def main() -> int:
         "max_diff_p50": float(np.median(max_diff)),
         "max_diff_p95": float(np.percentile(max_diff, 95)),
     }
+    out["PASS"] = bool(
+        out["pct_worlds_diverged_1e-4"] == 0.0
+        and out["max_diff_p95"] <= 1e-5
+        and n >= 64
+    )
     Path(args.out).write_text(json.dumps(out, indent=1))
     print(json.dumps(out, indent=1))
-    return 0
+    return 0 if out["PASS"] else 1
 
 
 if __name__ == "__main__":
