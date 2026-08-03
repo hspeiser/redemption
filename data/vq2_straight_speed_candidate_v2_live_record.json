@@ -1,0 +1,20 @@
+{
+  "run_id": "20260802_191537",
+  "episode": 0,
+  "finished": true,
+  "official_elapsed_s": 35.374649047000005,
+  "harness_duration_s": 37.05659770965576,
+  "timing_healthy": true,
+  "controller_config_sha256": "1929feabc311c49969023295dc516eb82364381addc39dd8b1c027c061da3ef7",
+  "training_session": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_191537",
+  "raw_session": "D:\\ai-gp\\raw_sessions\\vq2_20260802_191537",
+  "gate_15_crossing_lateral_m": 0.10742267647254597,
+  "gate_15_crossing_vertical_m": -0.1078317801782909,
+  "gate_16_crossing_lateral_m": -0.24094166589949503,
+  "gate_16_crossing_vertical_m": 0.12078715303264752,
+  "validation_batch": {
+    "attempts": 4,
+    "finishes": 1,
+    "other_failure_gates": [2, 6, 10]
+  }
+}

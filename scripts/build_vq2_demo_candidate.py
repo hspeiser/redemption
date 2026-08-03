@@ -50,11 +50,19 @@ def main() -> int:
         "--velocity-scale-overrides", default="",
         help="comma-separated gate:value reference velocity updates",
     )
+    parser.add_argument(
+        "--speed-cap", type=float, default=None,
+        help="optional live overspeed termination threshold",
+    )
     args = parser.parse_args()
     payload = json.loads(args.base.read_text())
     config = payload.setdefault("args", payload)
     config["demo"] = str(args.demo.resolve(strict=True))
     config["line"] = None
+    if args.speed_cap is not None:
+        if args.speed_cap <= 0.0:
+            parser.error("--speed-cap must be positive")
+        config["speed_cap"] = float(args.speed_cap)
     blend_gates = [
         int(value.strip())
         for value in args.trajectory_blend_gates.split(",")
@@ -91,6 +99,7 @@ def main() -> int:
         "lateral_gain_overrides": gain_overrides,
         "lateral_bias_overrides": bias_overrides,
         "velocity_scale_overrides": velocity_overrides,
+        "speed_cap": args.speed_cap,
     }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, indent=2) + "\n")
