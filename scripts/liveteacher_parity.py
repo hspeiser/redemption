@@ -12,6 +12,7 @@ error <= 1e-5, with per-component first-divergence attribution.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -27,21 +28,45 @@ from aigp.fastsim.liveteacher import (  # noqa: E402
 )
 
 
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fixture", default=str(
         REPO / "tests/fixtures/vq2_35p37_teacher_parity_v1.npz"))
-    ap.add_argument("--config", default=str(
-        REPO / "data/vq2_straight_speed_candidate_v2.json"))
+    ap.add_argument(
+        "--config",
+        help=("Exact config used to generate the fixture. Defaults to the "
+              "config_source recorded in the adjacent fixture manifest."),
+    )
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--out", default=str(
         REPO / "data/lineopt/liveteacher_parity_layer1.json"))
     args = ap.parse_args()
 
-    fx = np.load(args.fixture, allow_pickle=True)
+    fixture_path = Path(args.fixture)
+    manifest_path = fixture_path.with_suffix(".json")
+    manifest = json.loads(manifest_path.read_text())
+    config_path = Path(args.config or manifest["config_source"])
+    expected_config_hash = manifest.get("config_sha256")
+    actual_config_hash = sha256(config_path)
+    if expected_config_hash and actual_config_hash != expected_config_hash:
+        raise SystemExit(
+            "fixture/config mismatch: parity is meaningless unless the "
+            f"config hash is {expected_config_hash}; got "
+            f"{actual_config_hash} from {config_path}"
+        )
+
+    fx = np.load(fixture_path, allow_pickle=True)
     obs = np.asarray(fx["observation"], np.float32)
     n_steps = len(obs)
-    teacher = BatchedLiveTeacher(args.config, n_envs=1,
+    teacher = BatchedLiveTeacher(config_path, n_envs=1,
                                  device=args.device)
     gate_pos = teacher.demo_gate_position.cpu().numpy()
 
@@ -119,6 +144,8 @@ def main() -> int:
 
     summary = {
         "steps": n_steps,
+        "config": str(config_path.resolve()),
+        "config_sha256": actual_config_hash,
         "rows_exact": rows_ok,
         "segments_exact": seg_ok,
         "first_divergence": first_divergence,

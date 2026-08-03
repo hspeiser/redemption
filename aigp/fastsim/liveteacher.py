@@ -596,6 +596,16 @@ class BatchedLiveTeacher:
         if debug:
             return selected, {
                 "reference_row": self.cursor.clone(),
+                "reference_rows4": rows4.clone(),
+                "reference_weights4": w4.clone(),
+                "reference_observation": ref_obs.clone(),
+                "reference_rotation": ref_R.clone(),
+                "current_position": cur_pos.clone(),
+                "reference_position": ref_pos.clone(),
+                "current_velocity": cur_vel_w.clone(),
+                "reference_velocity": ref_vel_w.clone(),
+                "trajectory_rotation": R_des.clone(),
+                "trajectory_action": traj_action.clone(),
                 "reference_pre_residual": base.clone(),
                 "tracking": tracking,
                 "traj_blend": blend,
