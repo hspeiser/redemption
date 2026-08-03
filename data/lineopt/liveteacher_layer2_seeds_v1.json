@@ -1,0 +1,22 @@
+{
+  "schema": "vq2_liveteacher_layer2_seed_registry_v1",
+  "frozen_on": "2026-08-02",
+  "champion_config_sha256": "dd45eeb71bf6d8c0e90411a3717af0d8f143d99aa49bf96aa56421ab76b34796",
+  "golden_fixture_sha256": "3dcd94d7c8bd276f368adb6e9f43dfafd8b8d61e5ff9aa76c934420ebcb4f086",
+  "development": {
+    "worlds": 256,
+    "clean_seed": 20261217,
+    "impulse_seed": 20261218
+  },
+  "final": {
+    "worlds": 768,
+    "clean_seed": 20261219,
+    "impulse_seed": 20261220
+  },
+  "rules": [
+    "Use identical seeds for the trusted baseline and batched-port arms.",
+    "Development seeds may be inspected while fixing parity.",
+    "Final seeds must remain unseen until Layer 1 and development Layer 2 pass.",
+    "Never use these seeds for candidate search or controller tuning."
+  ]
+}

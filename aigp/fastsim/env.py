@@ -46,6 +46,10 @@ class FastEnvConfig:
     control_hz: float = 30.0
     substeps: int = 4
     max_episode_s: float = 45.0
+    # Training continuously recycles terminal environments. Paired audits
+    # disable this so one arm terminating early cannot consume reset RNG and
+    # perturb the still-active worlds in that arm.
+    auto_reset: bool = True
     # reward
     progress_scale: float = 2.0
     gate_bonus: float = 25.0
@@ -737,9 +741,20 @@ class FastVQ2Env:
                 self.backbone.set_target(self.target)
             if hasattr(self.backbone, "set_previous_action"):
                 self.backbone.set_previous_action(self.prev_action)
-            base = self.backbone.action(
-                self.p + self.noise_pos, self.v, self._qmat(self.q)
-            )
+            backbone_position = self.p + self.noise_pos
+            backbone_rotation = self._qmat(self.q)
+            if getattr(self.backbone, "needs_extras", False):
+                base = self.backbone.action(
+                    backbone_position,
+                    self.v,
+                    backbone_rotation,
+                    prev_action=self.prev_action,
+                    target=self.target,
+                )
+            else:
+                base = self.backbone.action(
+                    backbone_position, self.v, backbone_rotation
+                )
             residual = torch.clamp(action, -1.0, 1.0)
             if cfg.residual_active_gates:
                 active = torch.zeros(
@@ -909,14 +924,17 @@ class FastVQ2Env:
                 & (torch.rand(n, device=dev)
                    < cfg.impulse_rate_hz / cfg.control_hz)
             )
-            if impulse.any():
-                k = int(impulse.sum())
-                direction = torch.randn(k, 3, device=dev)
-                direction[:, 2] *= cfg.impulse_vertical_scale
-                direction = torch.nn.functional.normalize(direction, dim=1)
-                lo, hi = cfg.impulse_velocity_mps
-                magnitude = lo + (hi - lo) * torch.rand(k, 1, device=dev)
-                self.v[impulse] = self.v[impulse] + direction * magnitude
+            # Draw one tape row per world even when only a subset receives an
+            # impulse. This keeps subsequent random draws aligned between
+            # paired controller arms whose states may already differ.
+            direction = torch.randn(n, 3, device=dev)
+            direction[:, 2] *= cfg.impulse_vertical_scale
+            direction = torch.nn.functional.normalize(direction, dim=1)
+            lo, hi = cfg.impulse_velocity_mps
+            magnitude = lo + (hi - lo) * torch.rand(n, 1, device=dev)
+            self.v[impulse] = (
+                self.v[impulse] + direction[impulse] * magnitude[impulse]
+            )
 
         step_dt = 1.0 / cfg.control_hz
         self.t_ep += step_dt
@@ -992,11 +1010,10 @@ class FastVQ2Env:
                     ), dim=-1,
                 )
             )
+            fix_noise = torch.randn(n, 3, device=dev)
             if got_fix.any():
-                k = int(got_fix.sum())
                 self.noise_pos[got_fix] = (
-                    self.noise_amp[got_fix]
-                    * torch.randn(k, 3, device=dev)
+                    self.noise_amp[got_fix] * fix_noise[got_fix]
                 )
                 self.vis_age[got_fix] = 0.0
             self.vision_prev_fix = got_fix.float()
@@ -1020,24 +1037,27 @@ class FastVQ2Env:
                     )
                 )
             start = self.t_ep >= self.reloc_next_t
+            # Fixed-size draws make this a reproducible per-step random tape,
+            # independent of how many worlds enter relocation in either arm.
+            dur = (cfg.reloc_drift_s[0]
+                   + (cfg.reloc_drift_s[1] - cfg.reloc_drift_s[0])
+                   * torch.rand(n, device=dev))
+            mag = (cfg.reloc_mag_m[0]
+                   + (cfg.reloc_mag_m[1] - cfg.reloc_mag_m[0])
+                   * torch.rand(n, device=dev))
+            d = torch.randn(n, 3, device=dev)
+            d = d / (torch.linalg.norm(d, dim=1, keepdim=True) + 1e-9)
+            next_interval = (
+                cfg.reloc_interval_s[0]
+                + (cfg.reloc_interval_s[1] - cfg.reloc_interval_s[0])
+                * torch.rand(n, device=dev)
+            )
             if start.any():
-                k = int(start.sum())
-                dur = (cfg.reloc_drift_s[0]
-                       + (cfg.reloc_drift_s[1] - cfg.reloc_drift_s[0])
-                       * torch.rand(k, device=dev))
-                mag = (cfg.reloc_mag_m[0]
-                       + (cfg.reloc_mag_m[1] - cfg.reloc_mag_m[0])
-                       * torch.rand(k, device=dev))
-                d = torch.randn(k, 3, device=dev)
-                d = d / (torch.linalg.norm(d, dim=1, keepdim=True) + 1e-9)
-                self.reloc_dir[start] = d
-                self.reloc_rate[start] = mag / dur
-                self.reloc_end_t[start] = self.t_ep[start] + dur
+                self.reloc_dir[start] = d[start]
+                self.reloc_rate[start] = mag[start] / dur[start]
+                self.reloc_end_t[start] = self.t_ep[start] + dur[start]
                 self.reloc_next_t[start] = (
-                    self.t_ep[start] + dur
-                    + cfg.reloc_interval_s[0]
-                    + (cfg.reloc_interval_s[1] - cfg.reloc_interval_s[0])
-                    * torch.rand(k, device=dev)
+                    self.t_ep[start] + dur[start] + next_interval[start]
                 )
             drifting = self.t_ep < self.reloc_end_t
             self.noise_pos = self.noise_pos + (
@@ -1047,10 +1067,11 @@ class FastVQ2Env:
             # the snap: drift just ended -> collapse back to baseline
             snapped = (~drifting) & (self.reloc_end_t > 0) \
                 & (self.t_ep - step_dt < self.reloc_end_t)
+            snap_noise = torch.randn(n, 3, device=dev)
             if snapped.any():
                 self.noise_pos[snapped] = (
                     self.noise_amp[snapped]
-                    * torch.randn(int(snapped.sum()), 3, device=dev)
+                    * snap_noise[snapped]
                 )
 
         # gate plane events
@@ -1248,9 +1269,10 @@ class FastVQ2Env:
             "vision_fix": got_fix,
             "vision_fix_probability": vision_fix_probability,
         }
-        idx = torch.nonzero(done).squeeze(-1)
-        if len(idx):
-            self.reset(idx)
+        if cfg.auto_reset:
+            idx = torch.nonzero(done).squeeze(-1)
+            if len(idx):
+                self.reset(idx)
         return self.observations(), reward, done, info
 
     def _gate_local(self, p):

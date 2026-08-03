@@ -116,8 +116,14 @@ def _rotvec_batch(E: torch.Tensor) -> torch.Tensor:
     vee = torch.stack([E[:, 2, 1] - E[:, 1, 2],
                        E[:, 0, 2] - E[:, 2, 0],
                        E[:, 1, 0] - E[:, 0, 1]], dim=1)
-    sin_a = torch.sin(ang).clamp(min=1e-6)
-    return vee * (ang / (2.0 * sin_a))[:, None]
+    sin_a = torch.sin(ang)
+    # Float32 products of two valid rotations can have trace fractionally
+    # above 3, which clamps ``ang`` to zero even though the skew part still
+    # contains the true small rotation. Use the analytic SO(3) limit
+    # theta/(2 sin(theta)) -> 1/2 instead of multiplying that skew by zero.
+    regular = ang / (2.0 * torch.clamp(sin_a, min=1e-6))
+    scale = torch.where(ang < 1e-3, torch.full_like(ang, 0.5), regular)
+    return vee * scale[:, None]
 
 
 class BatchedLiveTeacher:
@@ -188,6 +194,7 @@ class BatchedLiveTeacher:
         demo = np.load(Path(demo_path or cfg["demo"]), allow_pickle=False)
         d_obs = np.asarray(demo["observation"], np.float32)
         self.demo_obs = torch.tensor(d_obs, device=dev)
+        self.n_pts = len(d_obs)
         self.demo_action = torch.tensor(
             np.asarray(demo["action"], np.float32), device=dev)
         d_vel = np.asarray(demo["velocity"], np.float32)

@@ -32,7 +32,10 @@ sys.path.insert(0, str(REPO))
 
 from aigp.fastsim.env import ACT_DIM, FastEnvConfig, FastVQ2Env  # noqa: E402
 from aigp.fastsim.sysid import SurrogateModel  # noqa: E402
-from aigp.fastsim.worldmodel import ResidualEnsemble  # noqa: E402
+from aigp.fastsim.worldmodel import (  # noqa: E402
+    ResidualEnsemble,
+    ResidualEnsemblePool,
+)
 from aigp.fastsim.liveteacher import BatchedLiveTeacher  # noqa: E402
 from scripts.fastsim_train_ppo import load_demo_states  # noqa: E402
 
@@ -43,7 +46,10 @@ def main() -> int:
                     help="frozen session config (authority)")
     ap.add_argument("--model", default=str(
         REPO / "data/fastsim_model_v3_live.json"))
-    ap.add_argument("--ensemble", required=True)
+    ap.add_argument(
+        "--ensemble", nargs="+", required=True,
+        help="one or more residual-ensemble checkpoints",
+    )
     ap.add_argument("--worlds", type=int, default=256)
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--speed-cap", type=float, default=12.5)
@@ -68,6 +74,7 @@ def main() -> int:
         random_start_frac=0.0,
         spawn_at_rest=True,
         max_episode_s=args.max_episode_s,
+        auto_reset=False,
         speed_cap_mps=args.speed_cap,
         act_delay_steps_min=0,
         act_delay_steps_max=0,
@@ -80,7 +87,7 @@ def main() -> int:
         impulse_vertical_scale=0.35,
         demo_corridor_m=2.0,
     )
-    cfg.apply_vision10hz()
+    cfg.apply_multigate10hz()
     cfg.fov_vision = True
     cfg.reloc_events = True
     cfg.dr_thrust = (0.97, 1.03)
@@ -89,11 +96,23 @@ def main() -> int:
     cfg.dr_drag = (0.20, 0.35)
 
     model = SurrogateModel.load(args.model)
-    ensemble, _meta = ResidualEnsemble.load(args.ensemble, str(device))
+    loaded = [
+        ResidualEnsemble.load(path, str(device)) for path in args.ensemble
+    ]
+    models = [item[0] for item in loaded]
+    ensemble = (
+        models[0]
+        if len(models) == 1
+        else ResidualEnsemblePool(models).to(device)
+    )
     ensemble.eval()
     demo_states = load_demo_states(demo_path, map_path)
     backbone = BatchedLiveTeacher(args.config, n_envs=n,
                                   device=str(device))
+    # Model/controller construction initializes torch modules. Re-seed at the
+    # actual world boundary so both arms receive the same reset and per-step
+    # random tape regardless of their implementation details.
+    torch.manual_seed(args.seed)
     env = FastVQ2Env(model, map_path, demo_states=demo_states,
                      config=cfg, device=str(device),
                      obstacles_path=obstacles, backbone=backbone,
@@ -112,7 +131,7 @@ def main() -> int:
             live = ~(finished | failed)
             alive += live.float()
             newf = info["finished"] & live
-            lap = torch.where(newf, alive * dt, lap)
+            lap = torch.where(newf, info["t_ep"], lap)
             finished |= newf
             newfail = done & live & ~info["finished"]
             fail_gate = torch.where(newfail, info["target"], fail_gate)
@@ -134,16 +153,22 @@ def main() -> int:
     for gate in sorted(set(fg.tolist())):
         summary["failure_gate_hist"][str(int(gate))] = int(
             (fg == gate).sum())
-    np.savez(
-        args.out,
-        world_id=np.arange(n, dtype=np.int64),
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_path,
+        world_id=(
+            np.int64(args.seed) * np.int64(1_000_000)
+            + np.arange(n, dtype=np.int64)
+        ),
         finished=finished.cpu().numpy(),
         finish_time_s=lap.cpu().numpy(),
         failure_gate=fail_gate.cpu().numpy(),
         seed=np.int64(args.seed),
         config=str(args.config),
+        ensemble=np.asarray(args.ensemble),
     )
-    Path(str(args.out) + ".summary.json").write_text(
+    Path(str(out_path) + ".summary.json").write_text(
         json.dumps(summary, indent=1))
     print(json.dumps(summary, indent=1))
     return 0

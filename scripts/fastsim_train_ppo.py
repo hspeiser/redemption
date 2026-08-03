@@ -630,6 +630,15 @@ def main() -> int:
                         help="optional per-gate multipliers on residual-scale")
     parser.add_argument("--live-teacher-config", default="",
                         help="use exact vectorized live teacher as backbone")
+    parser.add_argument(
+        "--batched-live-teacher-composition",
+        action="store_true",
+        help=(
+            "Eval-only: use BatchedLiveTeacher as the complete deployed "
+            "controller, including its routed actors, and disable the "
+            "outer PPO residual. Intended for Layer-2 parity artifacts."
+        ),
+    )
     parser.add_argument("--controller-model", default="",
                         help="rate calibration used by live trajectory tracker")
     parser.add_argument("--residual-log-std", type=float, default=-1.5,
@@ -673,6 +682,14 @@ def main() -> int:
     parser.add_argument("--eval-envs", type=int, default=0,
                         help="0 evaluates all training worlds")
     parser.add_argument("--eval-seed", type=int, default=20260801)
+    parser.add_argument(
+        "--eval-world-dump",
+        default="",
+        help=(
+            "Optional NPZ path for per-world deterministic-eval outcomes. "
+            "Used by the paired Layer-2 controller-parity oracle."
+        ),
+    )
     parser.add_argument(
         "--eval-impulse-rate-hz",
         type=float,
@@ -813,7 +830,33 @@ def main() -> int:
     backbone = None
     if args.residual:
         cfg.residual_scale = args.residual_scale
-        if args.live_teacher_config:
+        if args.batched_live_teacher_composition:
+            if not args.eval_only:
+                raise ValueError(
+                    "--batched-live-teacher-composition is eval-only"
+                )
+            if not args.live_teacher_config:
+                raise ValueError(
+                    "--batched-live-teacher-composition requires "
+                    "--live-teacher-config"
+                )
+            from aigp.fastsim.liveteacher import BatchedLiveTeacher
+
+            backbone = BatchedLiveTeacher(
+                args.live_teacher_config,
+                cfg.n_envs,
+                device=str(device),
+                map_path=args.map,
+                demo_path=args.demo_npz,
+            )
+            # This backbone already includes the primary/secondary actor
+            # routing and residual blend from the frozen live config.
+            cfg.residual_scale = 0.0
+            print(
+                "batched live-teacher composition: "
+                f"{args.live_teacher_config}"
+            )
+        elif args.live_teacher_config:
             from aigp.fastsim.live_teacher import LiveTeacherController
 
             arrays, fixed = load_live_teacher_config(
@@ -1139,6 +1182,22 @@ def main() -> int:
                     "p90_s": float(torch.quantile(times_for_gate, 0.9)),
                     "count": int(len(times_for_gate)),
                 }
+        if args.eval_world_dump:
+            dump_path = Path(args.eval_world_dump)
+            dump_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                dump_path,
+                world_id=(
+                    np.int64(args.eval_seed) * np.int64(1_000_000)
+                    + np.arange(count, dtype=np.int64)
+                ),
+                finished=f.detach().cpu().numpy().astype(bool),
+                finish_time_s=elapsed[:count].detach().cpu().numpy(),
+                failure_gate=failure_gate[:count].detach().cpu().numpy(),
+                min_clearance_m=(
+                    min_clearance[:count].detach().cpu().numpy()
+                ),
+            )
         return {
             "eval_worlds": count,
             "eval_finish_rate": float(f.float().mean()),

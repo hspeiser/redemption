@@ -1,0 +1,25 @@
+{
+  "schema": "vq2_teacher_parity_v1",
+  "rows": 1067,
+  "observation_dim": 53,
+  "episode_index": 0,
+  "episode_source": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_191537\\episode_0000.npz",
+  "episode_sha256": "f132a4106db5d8a9541a053f3bb3e5e7fcd2897025de583d8b978ac3d36dd2e9",
+  "steps_source": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_191537\\steps.jsonl",
+  "steps_sha256": "e306882973493c26d77423865e0c6b9ae7dd064a05d3fcda3311958f2d0faa49",
+  "fixture": "C:\\Users\\henry\\Desktop\\ai-gp\\tests\\fixtures\\vq2_35p37_teacher_parity_v1.npz",
+  "fixture_sha256": "3dcd94d7c8bd276f368adb6e9f43dfafd8b8d61e5ff9aa76c934420ebcb4f086",
+  "config_source": "D:\\ai-gp\\training\\vq2_full17_fastprefix_abba_v1\\20260802_191537\\config.json",
+  "config_sha256": "dd45eeb71bf6d8c0e90411a3717af0d8f143d99aa49bf96aa56421ab76b34796",
+  "required_action_max_abs_error": 1e-05,
+  "required_exact_fields": [
+    "actor_source",
+    "gate_index",
+    "selected_reference_row_int",
+    "reference_segment_start",
+    "reference_segment_end",
+    "trajectory_blend_active",
+    "residual_phase_active",
+    "residual_schedule_active"
+  ]
+}
