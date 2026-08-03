@@ -8,10 +8,11 @@ Built for the **AI Grand Prix** (Anduril × DCL) on the VQ2 Arsenal course:
 
 **Official record on the course: 35.374649 s.**
 
-https://github.com/user-attachments/assets/vq2_HOP_cleanlap.mp4
+![Two gates locked simultaneously mid-lap](docs/hero_mid.jpg)
 
-*(All videos live in the repo root — `vq2_HOP_cleanlap.mp4` is a full lap with
-the localizer overlay showing what the drone believes in real time.)*
+*Mid-lap, from the drone's own camera with the localizer overlay: two gates
+detected at once (8/8 corners each, 0.4 px residual), 16 corners fused into the
+filter, position uncertainty 2.2 cm.*
 
 ---
 
@@ -109,6 +110,12 @@ gates half out of frame, gates 2 m away filling the whole image, gates behind
 a parked jet. Those clicks seeded a pipeline that grew to **39,443 labeled
 frames**, and they're the reason the detector works at the moments that decide
 a race.
+
+![Gate 1 approach past the pillar and the jet](docs/hero_early.jpg)
+
+*The gate-1 approach: a pillar and a parked jet sit right on the racing line,
+and the next gate is still 28.8 m out — detected 8/8 corners at 0.3 px. This
+is the view that used to blind the detector.*
 
 ```mermaid
 xychart-beta
@@ -250,11 +257,15 @@ data/                     maps, models, demos, optimized lines
 
 ## More footage
 
-| Video | What you're seeing |
+Full-lap recordings are kept outside the repo (they're ~50 MB each). The stills
+above are frames from `vq2_HOP_cleanlap.mp4`, a complete lap rendered with the
+live localizer overlay: detected corners, per-gate range and bearing, corner
+residual in pixels, and the filter's own uncertainty ticking along the bottom.
+
+| Recording | What it shows |
 |---|---|
-| `vq2_HOP_cleanlap.mp4` | Full lap with localizer overlay |
-| `vq2_g9fix_proof.mp4` | Map correction: old (red) vs fixed (green) gate projections |
-| `vq2_003101_FINAL_V11_SPARSE_NO17.mp4` | Detector comparison, sparse visual anchors |
+| `vq2_HOP_cleanlap.mp4` | Full lap, localizer overlay |
+| `vq2_g9fix_proof.mp4` | Map correction: old (red) vs fixed (green) projections |
 | `vq2_NO_CONTACT_*.mp4` | Clean no-contact runs across detector variants |
 
 ---
