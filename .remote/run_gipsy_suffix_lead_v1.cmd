@@ -10,5 +10,5 @@ cd /d C:\Users\henry\aigp
   --prefix-demo data\vq2_hybrid_fastprefix_a2suffix_g11_v2.npz ^
   --handoff-pool data\lineopt\handoff_pool_13finish.json ^
   --device cuda --seed 20261302 ^
-  --n-envs 128 --pop 16 --elite 5 --iters 6 --final-envs 768 ^
+  --n-envs 256 --pop 12 --elite 4 --iters 5 --final-envs 768 ^
   --out-prefix worldmodel\suffix_exact_straight_lead_v1\speed
