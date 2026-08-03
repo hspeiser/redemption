@@ -199,7 +199,18 @@ def main() -> int:
     ap.add_argument(
         "--speed-gates", default="",
         help=("Comma-separated target gates whose velocity scales may change. "
-              "Only supported by the exact config search; default is 11-16."),
+              "Supported by either exact-controller search space; default "
+              "is every suffix segment."),
+    )
+    ap.add_argument(
+        "--line-a-fwd", type=float,
+        help=("Forward acceleration used when rebuilding line-space demos. "
+              "Defaults to the selected mode's profile."),
+    )
+    ap.add_argument(
+        "--line-a-brk", type=float,
+        help=("Braking acceleration used when rebuilding line-space demos. "
+              "Defaults to the selected mode's profile."),
     )
     ap.add_argument(
         "--lead-gates", default="",
@@ -273,6 +284,10 @@ def main() -> int:
     lcfg.start_dir = tuple(start_v / (np.linalg.norm(start_v) + 1e-9))
     if args.mode in ("aggressive", "speed"):
         lcfg.a_fwd, lcfg.a_brk = 6.5, 7.0
+    if args.line_a_fwd is not None:
+        lcfg.a_fwd = args.line_a_fwd
+    if args.line_a_brk is not None:
+        lcfg.a_brk = args.line_a_brk
 
     model = SurrogateModel.load(args.model)
     exact_ensemble = None
@@ -360,9 +375,8 @@ def main() -> int:
 
     speed_local_indices = np.arange(N_SUFFIX, dtype=np.int64)
     if args.speed_gates:
-        if not (args.live_teacher_config
-                and args.exact_search_space == "config"):
-            ap.error("--speed-gates requires the exact config search")
+        if not args.live_teacher_config:
+            ap.error("--speed-gates requires an exact-controller search")
         requested_gates = [
             int(item.strip()) for item in args.speed_gates.split(",")
             if item.strip()
@@ -402,7 +416,7 @@ def main() -> int:
 
     speed_params = (
         len(speed_local_indices) if args.live_teacher_config
-        and args.exact_search_space == "config"
+        and (args.exact_search_space == "config" or args.speed_gates)
         else N_SUFFIX + 1
     )
 
@@ -420,17 +434,18 @@ def main() -> int:
         if args.mode == "geometry":
             sc = seed_sc.copy()
         else:
-            bounds = (
-                (0.80, 1.30) if args.live_teacher_config
-                and args.exact_search_space == "config"
-                else (0.35, 1.0)
-            )
+            bounds = ((0.80, 1.30) if args.live_teacher_config
+                      and args.exact_search_space == "config"
+                      else (0.35, 1.0))
             proposed = np.clip(
                 theta[offset_params:offset_params + speed_params],
                 *bounds,
             )
             if args.live_teacher_config and args.exact_search_space == "config":
                 sc = seed_sc.copy()
+                sc[speed_local_indices] = proposed
+            elif args.live_teacher_config and args.speed_gates:
+                sc = seed_line_sc.copy()
                 sc[speed_local_indices] = proposed
             else:
                 sc = proposed
@@ -464,7 +479,7 @@ def main() -> int:
         speed_mean = (
             seed_sc[speed_local_indices]
             if args.live_teacher_config
-            and args.exact_search_space == "config"
+            and (args.exact_search_space == "config" or args.speed_gates)
             else seed_sc
         )
         mean = np.concatenate([mean, speed_mean])
@@ -589,14 +604,15 @@ def main() -> int:
         world_seed = args.seed + 1009 * exact_eval_round
         exact_eval_round += 1
         if args.parallel_evals > 1:
-            if args.exact_search_space != "config":
-                raise RuntimeError(
-                    "parallel exact evaluation requires config search space"
-                )
             jobs = []
             output_paths = []
-            for ci, theta in enumerate(thetas):
-                config_path = materialize_exact_config(theta, ci)
+            for ci, (ref, theta) in enumerate(zip(refs, thetas)):
+                if args.exact_search_space == "config":
+                    config_path = materialize_exact_config(theta, ci)
+                    demo_path = exact_prefix
+                else:
+                    config_path = args.live_teacher_config
+                    demo_path = materialize_exact_demo(ref, ci)
                 output_path = exact_tmp / (
                     f"parallel_{exact_eval_round}_{ci}.npz"
                 )
@@ -613,7 +629,7 @@ def main() -> int:
                     "--start-noise-pos-m", "0.08",
                     "--start-noise-vel-mps", "0.20",
                     "--max-episode-s", "20.0",
-                    "--demo", str(exact_prefix),
+                    "--demo", str(demo_path),
                     "--handoff-pool", str(args.handoff_pool),
                     "--device", str(device),
                     "--controller", "batched",
@@ -961,6 +977,9 @@ def main() -> int:
              ref_quat=ref["quat_wxyz"], ref_gate=ref["gate"] + SUFFIX_FIRST)
     report = {
         "mode": args.mode,
+        "exact_search_space": args.exact_search_space,
+        "line_a_fwd": lcfg.a_fwd,
+        "line_a_brk": lcfg.a_brk,
         "handoff": handoff["source"],
         "planned_suffix_s": ref["planned_lap_s"],
         "coverage": cov,
@@ -989,6 +1008,9 @@ def main() -> int:
     if args.live_teacher_config and args.exact_search_space == "config":
         winner_config = materialize_exact_config(best["theta"], "winner")
         shutil.copy2(winner_config, f"{out_prefix}_config.json")
+    elif args.live_teacher_config:
+        winner_demo = materialize_exact_demo(ref, "winner")
+        shutil.copy2(winner_demo, f"{out_prefix}_demo.npz")
     print(json.dumps({k: v for k, v in report.items()
                       if k != "history"}, indent=1))
     if exact_tmp is not None:

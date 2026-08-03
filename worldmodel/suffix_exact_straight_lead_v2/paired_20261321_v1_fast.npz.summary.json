@@ -1,0 +1,24 @@
+{
+ "worlds": 768,
+ "controller": "batched",
+ "seed": 20261321,
+ "finish_rate": 0.6862,
+ "median_s": 14.633,
+ "p90_s": 15.113,
+ "failure_gate_hist": {
+  "11": 160,
+  "12": 14,
+  "13": 43,
+  "14": 2,
+  "15": 7,
+  "16": 15
+ },
+ "finished_segment_median_s": {
+  "g10_to_g11": 2.7,
+  "g11_to_g12": 2.5,
+  "g12_to_g13": 2.733,
+  "g13_to_g14": 2.067,
+  "g14_to_g15": 2.333,
+  "g15_to_g16": 2.3
+ }
+}

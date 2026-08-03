@@ -1,0 +1,30 @@
+{
+  "name": "vq2_suffix_v2_balanced",
+  "status": "offline_certified_live_abba_pending",
+  "protected_champion_official_s": 35.374649,
+  "search": {
+    "seed": 20261309,
+    "final_worlds": 1536,
+    "finish_rate": 0.8203125,
+    "median_suffix_s": 14.700082778930664
+  },
+  "fresh_paired_audit": {
+    "seed": 20261321,
+    "worlds": 768,
+    "baseline_finish_rate": 0.6614583333333334,
+    "candidate_finish_rate": 0.7591145833333334,
+    "paired_finish_rate_delta": 0.09765625,
+    "paired_finish_rate_delta_ci95": [0.06640625, 0.12890625],
+    "paired_finish_time_delta_median_s": -0.5000066757202148,
+    "paired_finish_time_delta_ci95_s": [
+      -0.5333404541015625,
+      -0.5000066757202148
+    ]
+  },
+  "sha256": {
+    "speed_config.json": "F39B6D10DC98FEA3FE1FE1C8C27AA540362B1E7D65AC71138FC00347E2D4C1AA",
+    "speed_best.npz": "84ECBEDB9B503F9CC891612AAA9560B1193CD5DFA1F51992B0A8CF1290F6C2FB",
+    "speed_report.json": "183CB81D4068E06D02510628D2D593D17485587EF97BB713636D0370E210080A"
+  },
+  "live_launcher": ".remote/launch_live_suffix_v2_balanced_abba.ps1"
+}

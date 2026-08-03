@@ -1,8 +1,8 @@
 # VQ2 exact-controller suffix speed search
 
-Status: two new offline candidates certified on a second untouched 768-world
-audit; first live ABBA campaign was prefix-limited and produced no candidate
-suffix exposure.
+Status: balanced v2 candidate certified on two large final pools and one fresh
+paired 768-world audit; first live ABBA campaign was prefix-limited and
+produced no candidate suffix exposure.
 
 The frozen live record is 35.374649 s. Its gate-10-to-finish suffix is
 approximately 15.1 s. Every result below uses the deployment-parity
@@ -85,14 +85,13 @@ C849A521BFABCD5AC21D352BE6B96915D45447DBCF0B347F9FD75C75AA62CD60
 
 ## Next gates
 
-1. Finish the reliability-constrained Gipsy refinement around the new Pareto
-   knee.
-2. Audit a geometry-identical, self-consistently re-timed suffix demo when it
-   is available.
-3. Stop all offline compute, relaunch the simulator, and run protected ABBA:
+1. Stop all offline compute, manually relaunch the simulator, and run the v2
+   balanced candidate in protected ABBA:
    record champion, candidate, candidate, record champion.
-4. Promote only with official timing, timing-health pass, no safety regression,
+2. Promote only with official timing, timing-health pass, no safety regression,
    and hash-frozen config.
+3. If more reference time is needed, retime the existing suffix path directly;
+   do not rebuild its spline from only the suffix gates.
 
 ## Straight-scale plus action-lead frontier
 
@@ -138,6 +137,53 @@ Directly, the fast arm is 0.200 s faster than the reliability knee but gives
 up 11.72 completion points. Both merit a live slot: reliability first to
 increase suffix exposure, then fast for the record attempt once session health
 is proven. The protected 35.374649 s champion remains frozen.
+
+## Balanced v2 winner
+
+A larger second search started from the reliability knee, enforced an 80%
+search-world floor, evaluated 160 CEM candidates, and reranked 12 finalists on
+1,536 untouched worlds. It selected:
+
+```text
+velocity: g11 1.02562627, g12 1.05550588, g13 1.05, g14 1.0,
+          g15 1.07718446, g16 1.25211584
+leads:    g11 1, g12 3, g13 0, g14 0, g15 0, g16 2
+```
+
+Its final-search result was 82.03% completion at 14.700 s. A separate harsh
+paired audit (seed 20261321, 768 worlds, start noise 0.4 m/0.8 m/s) produced:
+
+| Arm | Completion | Change vs record | Median suffix | Paired time change |
+|---|---:|---:|---:|---:|
+| Frozen record | 66.15% | - | 15.167 s | - |
+| v1 fast | 68.62% | +2.47 points | 14.633 s | -0.533 s |
+| v1 reliability | 78.91% | +12.76 points | 14.867 s | -0.333 s |
+| **v2 balanced** | **75.91%** | **+9.77 points** | **14.667 s** | **-0.500 s** |
+
+The v2 completion improvement has a paired 95% CI of +6.64 to +12.89
+percentage points. Its paired time improvement is -0.533 to -0.500 s. On the
+same worlds, v2 matches v1-fast's paired finish time while improving completion
+by 7.29 points (CI +4.69 to +9.90). Compared with v1-reliability, it buys
+0.167 s for a 2.99-point completion reduction. This is the primary live ABBA
+candidate; v1-reliability remains the fallback.
+
+Finished-lap v2 segment medians show the reversal stayed unchanged:
+
+```text
+g10->11 2.833 s   g11->12 2.500 s   g12->13 2.733 s
+g13->14 2.067 s   g14->15 2.300 s   g15->16 2.300 s
+```
+
+## Geometry-preserving retime status
+
+The deployment-parity line-space machinery now supports restricted speed
+segments, parallel candidate audits, fixed profile accelerations, and exporting
+the winning demo. Its first smoke test deliberately ran before a full search
+and rejected the naive construction: rebuilding a spline from only gates
+11-16 changed the path at the splice, achieved only 9.38% completion, and
+failed mainly at gate 15. No full search was run. A valid follow-up must resample
+the existing saved suffix path itself so geometry is identical, then recompute
+velocity, attitude, rates, and thrust for the new timeline.
 
 ## First live ABBA campaign
 
