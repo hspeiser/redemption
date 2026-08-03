@@ -277,6 +277,98 @@ filter's own uncertainty.
 
 ---
 
+## Running it
+
+### Setup
+
+Requires the AI-GP simulator, Python 3.12, and an NVIDIA GPU (the live stack
+runs dense vision on CUDA at 10 Hz; CPU-only works but drops to ~3 Hz and the
+drone flies noticeably worse).
+
+```powershell
+py -3.12 -m venv .venv-train
+.\.venv-train\Scripts\python.exe -m pip install -U pip
+.\.venv-train\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.\.venv-train\Scripts\python.exe -m pip install numpy scipy opencv-python pymavlink ultralytics pillow
+```
+
+Start the simulator and let it reach the spawn pad. The stack talks MAVLink on
+UDP 14550 and receives the camera stream on 5600.
+
+### Fly the current champion
+
+The fastest verified configuration (35.374649 s official) is fully described by
+one frozen config file. This runs it against itself as a control, four flights,
+alternating arms:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .remote\launch_live_full17_fastprefix_abba.ps1 `
+  -CandidateConfig data\vq2_straight_speed_candidate_v2.json `
+  -ChampionConfig  data\vq2_straight_speed_candidate_v2.json `
+  -Cycles 2
+```
+
+Everything the run needs — map, detector checkpoints, reference demo, both
+residual actors, per-gate gains — is named inside that config. Recordings,
+per-step telemetry and episode archives land under the configured output root.
+
+### Test a change without flying
+
+Nothing should reach the simulator before it beats the champion offline. The
+evaluator uses the deployed controller itself, so offline results mean
+something:
+
+```powershell
+# rollout a config across randomized worlds under the learned world model
+.\.venv-train\Scripts\python.exe scripts\liveteacher_layer2.py `
+  --config data\vq2_straight_speed_candidate_v2.json `
+  --ensemble D:\ai-gp\worldmodel\v30_allgate_registry_flywheel\residual_ensemble_v30.pt `
+  --worlds 256 --seed 20261217 --device cuda --out out\my_candidate.npz
+
+# compare two arms with paired statistics and a pass/fail verdict
+.\.venv-train\Scripts\python.exe scripts\accept_vq2_layer2_parity.py `
+  --layer1 data\lineopt\liveteacher_parity_layer1.json `
+  --shadow data\lineopt\shadow_final.json `
+  --baseline out\champion.npz --candidate out\my_candidate.npz `
+  --stage development --out out\verdict.json
+```
+
+### Search for a faster line
+
+```powershell
+.\.venv-train\Scripts\python.exe scripts\fastsim_line_opt.py `
+  --speed-cap 10 --clearance 0.15 --out-prefix data\lineopt\my_search
+```
+
+Reports finish rate, lap time, and per-gate clearance for the winner. Convert
+it into a demo the live stack can fly with `scripts\build_lineopt_demo.py`.
+
+### Check the vision stack offline
+
+Replay a recorded session through the real localizer — same code path as live,
+no simulator needed:
+
+```powershell
+.\.venv-train\Scripts\python.exe scripts\replay_raw_session_bench.py `
+  --session D:\ai-gp\raw_sessions\<session> --run-dir <matching run dir> `
+  --episode-index 32 --vision-hz 10 --vision-device cuda
+```
+
+Set `AIGP_MULTIGATE=1` to enable course-wide association.
+
+### Reproducibility notes
+
+- Champion runs are frozen under `D:\ai-gp\champions\` with config, hashes,
+  episode files, and full raw recordings. A promotion never overwrites one.
+- Every config carries SHA-256s of its inputs; the parity oracle refuses to
+  run if a hash doesn't match what an artifact claims.
+- Live results are only comparable within a session. Alternate champion and
+  candidate in the same block, and treat timing-health aborts as infrastructure
+  faults rather than policy failures.
+
+---
+
 ## Closing note
 
 This was enormously fun. Two AI agents and a human working in shifts around one
