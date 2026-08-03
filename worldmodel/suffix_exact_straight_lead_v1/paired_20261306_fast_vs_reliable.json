@@ -1,0 +1,45 @@
+{
+  "worlds": 768,
+  "baseline_finish_rate": 0.8203125,
+  "candidate_finish_rate": 0.703125,
+  "paired_finish_rate_delta": -0.1171875,
+  "paired_finish_rate_delta_ci95": [
+    -0.14713541666666666,
+    -0.08723958333333333
+  ],
+  "candidate_only_finishes": 31,
+  "baseline_only_finishes": 121,
+  "both_finished": 509,
+  "paired_finish_time_delta_median_s": -0.20000267028808594,
+  "paired_finish_time_delta_ci95_s": [
+    -0.20000267028808594,
+    -0.16666889190673828
+  ],
+  "baseline_terminal_histogram": {
+    "-1": 630,
+    "11": 93,
+    "12": 11,
+    "13": 26,
+    "14": 1,
+    "15": 3,
+    "16": 4
+  },
+  "candidate_terminal_histogram": {
+    "-1": 540,
+    "11": 164,
+    "12": 16,
+    "13": 28,
+    "14": 3,
+    "16": 17
+  },
+  "terminal_histogram_js_bits": 0.019571608497616542,
+  "acceptance": {
+    "finish_rate_tolerance": 0.03,
+    "finish_rate_pass": false,
+    "finish_time_tolerance_s": 0.15,
+    "finish_time_pass": false,
+    "terminal_js_tolerance_bits": 0.02,
+    "terminal_histogram_pass": true,
+    "pass": false
+  }
+}

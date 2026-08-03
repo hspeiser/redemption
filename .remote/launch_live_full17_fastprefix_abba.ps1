@@ -11,6 +11,8 @@ param(
     [string]$PrefixPrimaryGates = '3,4,5',
     [string]$ResidualGates = '0,1,2,4,11,12,14,15,16',
     [string]$ReferenceLateralOffsets = '0:0,1:0.300000012,2:0.0878505111,3:-0.3,4:0.45,5:0.10,6:-0.10',
+    [string]$ReferenceVelocityScales = '',
+    [string]$ReferenceActionLeads = '',
     [string]$GateCenterFunnelGates = '3,5,8',
     [string]$Sequence = 'protected_champion,candidate,candidate,protected_champion',
     [ValidateRange(1, 10)]
@@ -99,6 +101,17 @@ $arguments = @(
     '--override', "timing_failure_limit=$TimingFailureLimit"
 )
 
+if ($ReferenceVelocityScales) {
+    $arguments += @(
+        '--override', "reference_velocity_scales=$ReferenceVelocityScales"
+    )
+}
+if ($ReferenceActionLeads) {
+    $arguments += @(
+        '--override', "reference_action_leads=$ReferenceActionLeads"
+    )
+}
+
 if ($DryRun) {
     [pscustomobject]@{
         executable = $python
@@ -118,6 +131,8 @@ if ($DryRun) {
         prefix_primary_gates = $PrefixPrimaryGates
         residual_gates = $ResidualGates
         reference_lateral_offsets = $ReferenceLateralOffsets
+        reference_velocity_scales = $ReferenceVelocityScales
+        reference_action_leads = $ReferenceActionLeads
         gate_center_funnel_gates = $GateCenterFunnelGates
         gate_primary_ensemble = $true
         one_process = $true

@@ -1,7 +1,8 @@
 # VQ2 exact-controller suffix speed search
 
-Status: offline candidate certified; first live ABBA campaign was
-prefix-limited and produced no candidate suffix exposure.
+Status: two new offline candidates certified on a second untouched 768-world
+audit; first live ABBA campaign was prefix-limited and produced no candidate
+suffix exposure.
 
 The frozen live record is 35.374649 s. Its gate-10-to-finish suffix is
 approximately 15.1 s. Every result below uses the deployment-parity
@@ -84,15 +85,59 @@ C849A521BFABCD5AC21D352BE6B96915D45447DBCF0B347F9FD75C75AA62CD60
 
 ## Next gates
 
-1. Finish the Gipsy straight-scale plus discrete action-lead search.
-2. Audit its finalists on untouched paired worlds and compare them with this
-   candidate, not only with the record config.
-3. Audit a geometry-identical, self-consistently re-timed suffix demo when it
+1. Finish the reliability-constrained Gipsy refinement around the new Pareto
+   knee.
+2. Audit a geometry-identical, self-consistently re-timed suffix demo when it
    is available.
-4. Stop all offline compute, relaunch the simulator, and run protected ABBA:
+3. Stop all offline compute, relaunch the simulator, and run protected ABBA:
    record champion, candidate, candidate, record champion.
-5. Promote only with official timing, timing-health pass, no safety regression,
+4. Promote only with official timing, timing-health pass, no safety regression,
    and hash-frozen config.
+
+## Straight-scale plus action-lead frontier
+
+Gipsy ran the exact deployed controller with four concurrent evaluators. The
+search changed only velocity scales and integer action leads at gates 11, 12,
+15, and 16. Gates 13 and 14 and all suffix geometry remained frozen. Its eight
+finalists were reranked together on 768 worlds; then the record baseline, the
+prior straight-only winner, the fastest feasible point, and the reliability
+knee were audited on a different untouched 768-world seed (20261306).
+
+Fresh paired results against the frozen record suffix:
+
+| Arm | Completion | Change | Median suffix | Change |
+|---|---:|---:|---:|---:|
+| Frozen record | 65.23% | - | 15.167 s | - |
+| Prior straight-only | 78.26% | +13.02 points | 14.833 s | -0.367 s |
+| Fast frontier | 70.31% | +5.08 points | 14.633 s | -0.533 s |
+| Reliability knee | 82.03% | +16.80 points | 14.833 s | -0.333 s |
+
+Paired bootstrap intervals exclude zero for every completion and time
+improvement. The fast arm's completion delta is +2.34 to +7.68 points (95% CI)
+and its time delta is -0.533 to -0.517 s. The reliability arm's completion
+delta is +13.67 to +20.05 points and its time delta is exactly -0.333 s at the
+30 Hz timing resolution.
+
+The fast arm's suffix settings are:
+
+```text
+velocity: g11 1.07720512, g12 1.02973040, g13 1.05, g14 1.0,
+          g15 1.04317720, g16 1.24178291
+leads:    g11 0, g12 1, g13 0, g14 0, g15 0, g16 0
+```
+
+The reliability knee's suffix settings are:
+
+```text
+velocity: g11 1.01462406, g12 1.03124815, g13 1.05, g14 1.0,
+          g15 1.06227591, g16 1.19829365
+leads:    g11 2, g12 1, g13 0, g14 0, g15 0, g16 2
+```
+
+Directly, the fast arm is 0.200 s faster than the reliability knee but gives
+up 11.72 completion points. Both merit a live slot: reliability first to
+increase suffix exposure, then fast for the record attempt once session health
+is proven. The protected 35.374649 s champion remains frozen.
 
 ## First live ABBA campaign
 
