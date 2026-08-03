@@ -8,12 +8,13 @@ Built for the **AI Grand Prix** (Anduril × DCL) on the VQ2 Arsenal course:
 
 **Official record on the course: 35.374649 s.**
 
-![A full lap from the drone's camera, localizer overlay on](docs/lap.gif)
+![The 35.37 s record lap from the drone's camera](docs/record_lap.gif)
 
-*A complete lap from the drone's own camera, sped up ~7x. Green boxes are gates
-the localizer has locked; the labels show range, bearing, corners matched, and
-pixel residual. Bottom-left ticks along with elapsed time, corners fused, and
-the filter's position uncertainty.*
+*The record lap itself — every frame is from the drone's camera during that
+run, sped up ~8x. Green outlines are gates the localizer has locked onto and
+green dots are the corners it fused. The bar tracks elapsed time, how many
+gates are being used at once, corners fused, and the filter's own position
+uncertainty (typically 1-7 cm).*
 
 ---
 
@@ -264,16 +265,20 @@ data/                     maps, models, demos, optimized lines
 
 ## More footage
 
-The animation above is `vq2_HOP_cleanlap.mp4` compressed to a GIF. Full-quality
-recordings are kept outside the repo (~50 MB each) and all carry the same live
-overlay: detected corners, per-gate range and bearing, pixel residual, and the
-filter's own uncertainty.
+The animation at the top is rendered straight from the record run's raw
+recording — 5,958 camera frames and the localizer's own debug stream — by
+`scripts/render_record_lap.py`. Point it at any recorded session to get the
+same view of any flight:
 
-| Recording | What it shows |
-|---|---|
-| `vq2_HOP_cleanlap.mp4` | Full lap, localizer overlay |
-| `vq2_g9fix_proof.mp4` | Map correction: old (red) vs fixed (green) projections |
-| `vq2_NO_CONTACT_*.mp4` | Clean no-contact runs across detector variants |
+```powershell
+.\.venv-train\Scripts\python.exe scripts\render_record_lap.py `
+  --session D:\ai-gp\raw_sessions\vq2_20260802_191537 `
+  --out docs\record_lap.gif --start-s 7.2 --duration-s 36
+```
+
+Every champion run is archived with its full camera and MAVLink recording, so
+any lap in the history can be replayed, re-rendered, or re-analyzed frame by
+frame.
 
 ---
 
