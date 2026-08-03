@@ -433,14 +433,16 @@ def build_residual_demo_pairs(
             dtype=torch.float32,
             device=device,
         )
-        if schedule.shape != (5, knots, ACT_DIM):
+        expected = (args.race_gates, knots, ACT_DIM)
+        if schedule.shape != expected:
             raise ValueError(
-                f"fixed residual schedule shape {tuple(schedule.shape)}"
+                f"fixed residual schedule shape {tuple(schedule.shape)}, "
+                f"expected {expected}"
             )
         row_index = torch.as_tensor(
             source_rows, dtype=torch.long, device=device
         )
-        lookup_gate = torch.clamp(target_gate, 0, 4)
+        lookup_gate = torch.clamp(target_gate, 0, args.race_gates - 1)
         start = reference.gate_start[lookup_gate]
         end = reference.gate_end[lookup_gate]
         phase = torch.clamp(
@@ -880,7 +882,7 @@ def main() -> int:
         schedule_np = np.asarray(
             schedule_payload["residual_schedule"], np.float32
         )
-        expected = (5, fixed_schedule_knots, ACT_DIM)
+        expected = (args.race_gates, fixed_schedule_knots, ACT_DIM)
         if schedule_np.shape != expected:
             raise ValueError(
                 f"fixed residual schedule shape {schedule_np.shape}, "
@@ -897,7 +899,7 @@ def main() -> int:
     def add_fixed_schedule(action: torch.Tensor) -> torch.Tensor:
         if fixed_schedule is None:
             return action
-        gate = torch.clamp(env.target, 0, 4)
+        gate = torch.clamp(env.target, 0, args.race_gates - 1)
         start = env.cum_len[gate]
         length = env.seg_len[gate]
         phase = torch.clamp(
@@ -1198,6 +1200,24 @@ def main() -> int:
         (run_dir / "eval_only.json").write_text(json.dumps(
             output, indent=2
         ))
+        if args.bc_on_resume and args.bc_steps > 0:
+            torch.save({
+                "actor": actor.state_dict(),
+                "critic": critic.state_dict(),
+                "log_std": log_std.data,
+                "optimizer": optimizer.state_dict(),
+                "obs_mean": obs_mean,
+                "obs_var": obs_var,
+                "obs_count": obs_count,
+                "iter": start_iter,
+                "config": vars(args),
+                "evaluation": output,
+                "supervised_adaptation": {
+                    "steps": int(args.bc_steps),
+                    "learning_rate": float(args.bc_lr),
+                    "demo": str(args.bc_init),
+                },
+            }, run_dir / "eval_actor.pt")
         return 0
     for it in range(start_iter, args.iters):
         O = torch.zeros(args.horizon, args.n_envs, OBS_DIM, device=device)

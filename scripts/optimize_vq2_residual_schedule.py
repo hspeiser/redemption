@@ -116,6 +116,9 @@ def evaluate(
     aleatoric_scale: float,
     impulse_rate_hz: float,
     seed: int,
+    race_gates: int = 5,
+    max_episode_s: float = 14.0,
+    start_gate: int | None = None,
     multigate_estimator: bool = False,
     residual_scale: float = 0.2,
     residual_gates: tuple[int, ...] | None = None,
@@ -125,16 +128,24 @@ def evaluate(
     candidates = len(theta)
     n = candidates * worlds
     table = torch.as_tensor(
-        theta.reshape(candidates, 5, knots, ACT_DIM),
+        theta.reshape(candidates, race_gates, knots, ACT_DIM),
         dtype=torch.float32,
         device=device,
     )
+    start_gate_weights: tuple[float, ...] = ()
+    random_start_frac = 0.0
+    if start_gate is not None:
+        weights = np.zeros(race_gates, np.float32)
+        weights[start_gate] = 1.0
+        start_gate_weights = tuple(float(value) for value in weights)
+        random_start_frac = 1.0
     cfg = FastEnvConfig(
         n_envs=n,
-        race_gates=5,
-        random_start_frac=0.0,
+        race_gates=race_gates,
+        random_start_frac=random_start_frac,
+        demo_gate_weights=start_gate_weights,
         spawn_at_rest=True,
-        max_episode_s=14.0,
+        max_episode_s=max_episode_s,
         speed_cap_mps=16.0,
         act_delay_steps_min=0,
         act_delay_steps_max=0,
@@ -158,7 +169,7 @@ def evaluate(
     cfg.dr_rate_tau = (0.90, 1.10)
     cfg.dr_drag = (0.20, 0.35)
     arrays, fixed = load_live_teacher_config(
-        teacher_config, n, map_path=map_path
+        teacher_config, n, gate_count=race_gates, map_path=map_path
     )
     fixed.setdefault(
         "schedule_gate_positions", load_schedule_gate_positions(map_path)
@@ -217,8 +228,9 @@ def evaluate(
                 phase_active = torch.ones_like(actor_active)
                 for gate_index, (start, end) in residual_phase_windows.items():
                     on_gate = env.target == int(gate_index)
-                    segment_start = env.cum_len[env.target.clamp(0, 4)]
-                    segment_length = env.seg_len[env.target.clamp(0, 4)]
+                    lookup_gate = env.target.clamp(0, race_gates - 1)
+                    segment_start = env.cum_len[lookup_gate]
+                    segment_length = env.seg_len[lookup_gate]
                     phase = torch.clamp(
                         (env.progress - segment_start)
                         / (segment_length + 1e-9),
@@ -291,7 +303,8 @@ def evaluate(
             )),
             "failure_histogram": {
                 str(gate): int((failures == gate).sum())
-                for gate in range(5) if bool((failures == gate).any())
+                for gate in range(race_gates)
+                if bool((failures == gate).any())
             },
         })
     return reports
@@ -359,7 +372,27 @@ def main() -> int:
             "small-batch champion from being promoted."
         ),
     )
+    parser.add_argument("--robust-worlds", type=int, default=2048)
+    parser.add_argument("--impulse-worlds", type=int, default=1024)
     parser.add_argument("--knots", type=int, default=3)
+    parser.add_argument("--race-gates", type=int, default=5)
+    parser.add_argument("--max-episode-s", type=float, default=14.0)
+    parser.add_argument(
+        "--start-gate", type=int, default=-1,
+        help=(
+            "Optional target gate whose demonstrated states seed every "
+            "search world. Use this to optimize a protected late section "
+            "without resimulating immutable prefix gates."
+        ),
+    )
+    parser.add_argument(
+        "--active-residual-gates", default="",
+        help=(
+            "Optional comma-separated gates on which the protected actor "
+            "remains active. The searched schedule is controlled separately "
+            "by --optimize-gates."
+        ),
+    )
     parser.add_argument(
         "--optimize-gates", default="",
         help=(
@@ -398,6 +431,8 @@ def main() -> int:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
+    if args.start_gate >= args.race_gates:
+        parser.error("--start-gate must be below --race-gates")
     if args.smoke:
         args.population, args.elite, args.iterations, args.worlds = 6, 2, 2, 4
     actor, obs_mean, obs_var = load_actor(args.actor, args.device)
@@ -411,7 +446,7 @@ def main() -> int:
     model = SurrogateModel.load(args.model)
     controller_model = SurrogateModel.load(args.controller_model)
     demo = load_demo_states(args.demo, args.map)
-    keep = np.asarray(demo["gate"]) < 5
+    keep = np.asarray(demo["gate"]) < args.race_gates
     demo = {key: np.asarray(value)[keep] for key, value in demo.items()}
 
     def evaluate_models(
@@ -442,8 +477,14 @@ def main() -> int:
                 aleatoric_scale=args.aleatoric_scale,
                 impulse_rate_hz=impulse_rate_hz,
                 seed=seed,
+                race_gates=args.race_gates,
+                max_episode_s=args.max_episode_s,
+                start_gate=(
+                    args.start_gate if args.start_gate >= 0 else None
+                ),
                 multigate_estimator=args.multigate_estimator,
                 residual_scale=args.residual_scale,
+                residual_gates=residual_gates,
             )
             for ensemble in ensembles
         ]
@@ -461,7 +502,7 @@ def main() -> int:
         ])
         return per_model.min(axis=0)
     rng = np.random.default_rng(args.seed)
-    dimensions = 5 * args.knots * ACT_DIM
+    dimensions = args.race_gates * args.knots * ACT_DIM
     mean = np.zeros(dimensions, np.float64)
     if args.initial is not None:
         initial = json.loads(args.initial.read_text())
@@ -474,9 +515,28 @@ def main() -> int:
         int(value.strip()) for value in args.optimize_gates.split(",")
         if value.strip()
     }
-    if optimize_gates and not all(0 <= gate < 5 for gate in optimize_gates):
-        raise ValueError("--optimize-gates entries must be in 0..4")
-    active = np.ones((5, args.knots, ACT_DIM), bool)
+    if optimize_gates and not all(
+        0 <= gate < args.race_gates for gate in optimize_gates
+    ):
+        raise ValueError(
+            "--optimize-gates entries must be in "
+            f"0..{args.race_gates - 1}"
+        )
+    residual_gates = tuple(
+        int(value.strip())
+        for value in args.active_residual_gates.split(",")
+        if value.strip()
+    ) or None
+    if residual_gates is not None and not all(
+        0 <= gate < args.race_gates for gate in residual_gates
+    ):
+        raise ValueError(
+            "--active-residual-gates entries must be in "
+            f"0..{args.race_gates - 1}"
+        )
+    active = np.ones(
+        (args.race_gates, args.knots, ACT_DIM), bool
+    )
     if optimize_gates:
         active[:] = False
         for gate in optimize_gates:
@@ -520,10 +580,10 @@ def main() -> int:
             "iteration_best_by_model": winner_reports,
             "champion_by_model": best["reports"],
             "iteration_schedule": theta[winner].reshape(
-                5, args.knots, ACT_DIM
+                args.race_gates, args.knots, ACT_DIM
             ).tolist(),
             "champion_schedule": best["theta"].reshape(
-                5, args.knots, ACT_DIM
+                args.race_gates, args.knots, ACT_DIM
             ).tolist(),
         }
         history.append(row)
@@ -567,14 +627,14 @@ def main() -> int:
     }
     robust_by_model = evaluate_models(
         best["theta"][None],
-        worlds=2048 if not args.smoke else 32,
+        worlds=args.robust_worlds if not args.smoke else 32,
         impulse_rate_hz=0.0,
         seed=args.seed + 99173,
     )
     robust_by_model = [reports[0] for reports in robust_by_model]
     impulse_by_model = evaluate_models(
         best["theta"][None],
-        worlds=1024 if not args.smoke else 16,
+        worlds=args.impulse_worlds if not args.smoke else 16,
         impulse_rate_hz=args.impulse_rate_hz,
         seed=args.seed + 221137,
     )
@@ -585,7 +645,7 @@ def main() -> int:
         "residual_scale": float(args.residual_scale),
         "multigate_estimator": bool(args.multigate_estimator),
         "residual_schedule": best["theta"].reshape(
-            5, args.knots, ACT_DIM
+            args.race_gates, args.knots, ACT_DIM
         ).tolist(),
         "robust_eval_by_model": robust_by_model,
         "impulse_eval_by_model": impulse_by_model,
