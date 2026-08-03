@@ -174,6 +174,11 @@ def main() -> int:
     lap = torch.full((n,), float("nan"), device=device)
     alive = torch.zeros(n, device=device)
     min_clearance = torch.full((n,), float("inf"), device=device)
+    crossing_time = torch.full((n, 17), float("nan"), device=device)
+    if args.handoff_pool:
+        # Suffix audits start while targeting gate 11, so gate 10 is the
+        # measured handoff boundary and defines suffix time zero.
+        crossing_time[:, 10] = 0.0
     dt = 1.0 / cfg.control_hz
     with torch.no_grad():
         for _ in range(int(cfg.max_episode_s * cfg.control_hz) + 1):
@@ -181,6 +186,13 @@ def main() -> int:
             live = ~(finished | failed)
             alive += live.float()
             newf = info["finished"] & live
+            passed = info["passed"] & live
+            crossed_gate = info["target"] - 1
+            for gate in range(17):
+                gate_pass = passed & (crossed_gate == gate)
+                crossing_time[:, gate] = torch.where(
+                    gate_pass, info["t_ep"], crossing_time[:, gate]
+                )
             crossed = info["cross_r"] >= 0.0
             margin = HOLE_HALF - info["cross_r"]
             min_clearance = torch.where(
@@ -206,11 +218,20 @@ def main() -> int:
         "median_s": round(float(lap[ok].median()), 3) if fr else None,
         "p90_s": round(float(lap[ok].quantile(0.9)), 3) if fr else None,
         "failure_gate_hist": {},
+        "finished_segment_median_s": {},
     }
     fg = fail_gate[failed].cpu().numpy()
     for gate in sorted(set(fg.tolist())):
         summary["failure_gate_hist"][str(int(gate))] = int(
             (fg == gate).sum())
+    for gate in range(11, 17):
+        start = crossing_time[:, gate - 1]
+        end = crossing_time[:, gate]
+        valid = ok & torch.isfinite(start) & torch.isfinite(end)
+        if bool(valid.any()):
+            summary["finished_segment_median_s"][
+                f"g{gate - 1}_to_g{gate}"
+            ] = round(float((end[valid] - start[valid]).median()), 3)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -223,6 +244,7 @@ def main() -> int:
         finish_time_s=lap.cpu().numpy(),
         failure_gate=fail_gate.cpu().numpy(),
         min_clearance_m=min_clearance.cpu().numpy(),
+        crossing_time_s=crossing_time.cpu().numpy(),
         seed=np.int64(args.seed),
         config=str(args.config),
         ensemble=np.asarray(args.ensemble),

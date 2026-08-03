@@ -14,6 +14,7 @@ Modes (Codex's three candidates):
     geometry  -- offsets only, speed profile frozen at the cap-12 seed
     timing    -- offsets + per-segment speeds
     aggressive-- offsets + speeds, stronger lap-time weight
+    speed     -- reliability-floor-constrained timing optimization
 
     python scripts/fastsim_suffix_covis.py --mode geometry \
         --out-prefix data/lineopt/sfx_geo
@@ -137,7 +138,8 @@ def covis_metrics(ref, all_corners, all_centers, all_normals,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=("geometry", "timing", "aggressive"),
+    ap.add_argument(
+        "--mode", choices=("geometry", "timing", "aggressive", "speed"),
                     required=True)
     ap.add_argument("--map", default=str(
         REPO / "data/vq2_runtime_map_g9g15fix.json"))
@@ -185,6 +187,34 @@ def main() -> int:
         ),
     )
     ap.add_argument("--bridge-rows", type=int, default=30)
+    ap.add_argument(
+        "--reliability-floor", type=float, default=0.65,
+        help="Minimum search finish rate before speed mode optimizes time.",
+    )
+    ap.add_argument(
+        "--freeze-offsets", action="store_true",
+        help=("Keep the config's suffix geometry fixed and search only "
+              "velocity scales (timing/aggressive modes)."),
+    )
+    ap.add_argument(
+        "--speed-gates", default="",
+        help=("Comma-separated target gates whose velocity scales may change. "
+              "Only supported by the exact config search; default is 11-16."),
+    )
+    ap.add_argument(
+        "--lead-gates", default="",
+        help=("Comma-separated target gates whose integer reference-action "
+              "leads may change. Exact config search only."),
+    )
+    ap.add_argument(
+        "--lead-max", type=int, default=8,
+        help="Largest per-gate reference-action lead considered.",
+    )
+    ap.add_argument(
+        "--finalists", type=int, default=1,
+        help=("Number of search candidates to rerank together on the fresh "
+              "final-world pool before selecting the winner."),
+    )
     ap.add_argument("--out-prefix", required=True)
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
@@ -228,12 +258,13 @@ def main() -> int:
         SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX]
     seed_sc = theta_full[17 * 2:][SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX + 1]
     seed_line_sc = seed_sc.copy()
+    seed_lead = np.zeros(N_SUFFIX, np.int64)
 
     lcfg = LineConfig(speed_cap=12.0, clearance=0.15,
                       launch_speed=float(handoff["speed"]))
     lcfg.spawn = tuple(start_p)
     lcfg.start_dir = tuple(start_v / (np.linalg.norm(start_v) + 1e-9))
-    if args.mode == "aggressive":
+    if args.mode in ("aggressive", "speed"):
         lcfg.a_fwd, lcfg.a_brk = 6.5, 7.0
 
     model = SurrogateModel.load(args.model)
@@ -306,6 +337,10 @@ def main() -> int:
             seed_sc = parsed_values(
                 "reference_velocity_scales", vel_default
             )[SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX]
+            lead_default = int(live_cfg.get("reference_action_lead", 0))
+            seed_lead = parsed_values(
+                "reference_action_leads", lead_default
+            )[SUFFIX_FIRST:SUFFIX_FIRST + N_SUFFIX].astype(np.int64)
     off_lim = (
         0.35 if args.live_teacher_config
         and args.exact_search_space == "config"
@@ -315,9 +350,64 @@ def main() -> int:
     g15_lo = seed_off[g15_local] - 0.15
     g15_hi = seed_off[g15_local] + 0.15
 
+    speed_local_indices = np.arange(N_SUFFIX, dtype=np.int64)
+    if args.speed_gates:
+        if not (args.live_teacher_config
+                and args.exact_search_space == "config"):
+            ap.error("--speed-gates requires the exact config search")
+        requested_gates = [
+            int(item.strip()) for item in args.speed_gates.split(",")
+            if item.strip()
+        ]
+        if not requested_gates or any(
+            gate < SUFFIX_FIRST or gate >= SUFFIX_FIRST + N_SUFFIX
+            for gate in requested_gates
+        ):
+            ap.error("--speed-gates must contain gates from 11 through 16")
+        speed_local_indices = np.asarray(
+            sorted(set(gate - SUFFIX_FIRST for gate in requested_gates)),
+            dtype=np.int64,
+        )
+    lead_local_indices = np.empty(0, dtype=np.int64)
+    if args.lead_gates:
+        if args.mode == "geometry" or not (
+            args.live_teacher_config
+            and args.exact_search_space == "config"
+        ):
+            ap.error("--lead-gates requires a non-geometry exact config search")
+        requested_lead_gates = [
+            int(item.strip()) for item in args.lead_gates.split(",")
+            if item.strip()
+        ]
+        if not requested_lead_gates or any(
+            gate < SUFFIX_FIRST or gate >= SUFFIX_FIRST + N_SUFFIX
+            for gate in requested_lead_gates
+        ):
+            ap.error("--lead-gates must contain gates from 11 through 16")
+        lead_local_indices = np.asarray(
+            sorted(set(gate - SUFFIX_FIRST
+                       for gate in requested_lead_gates)),
+            dtype=np.int64,
+        )
+    if args.lead_max < 0:
+        ap.error("--lead-max must be non-negative")
+
+    speed_params = (
+        len(speed_local_indices) if args.live_teacher_config
+        and args.exact_search_space == "config"
+        else N_SUFFIX + 1
+    )
+
     def unpack(theta):
-        off = np.clip(theta[:N_SUFFIX * 2].reshape(N_SUFFIX, 2),
-                      -off_lim, off_lim)
+        offset_params = 0 if args.freeze_offsets else N_SUFFIX * 2
+        off = (
+            seed_off.copy() if args.freeze_offsets
+            else np.clip(
+                theta[:offset_params].reshape(N_SUFFIX, 2),
+                -off_lim,
+                off_lim,
+            )
+        )
         off[g15_local] = np.clip(off[g15_local], g15_lo, g15_hi)
         if args.mode == "geometry":
             sc = seed_sc.copy()
@@ -327,24 +417,66 @@ def main() -> int:
                 and args.exact_search_space == "config"
                 else (0.35, 1.0)
             )
-            sc = np.clip(theta[N_SUFFIX * 2:], *bounds)
+            proposed = np.clip(
+                theta[offset_params:offset_params + speed_params],
+                *bounds,
+            )
+            if args.live_teacher_config and args.exact_search_space == "config":
+                sc = seed_sc.copy()
+                sc[speed_local_indices] = proposed
+            else:
+                sc = proposed
         return off, sc
 
-    speed_params = (
-        N_SUFFIX if args.live_teacher_config
-        and args.exact_search_space == "config"
-        else N_SUFFIX + 1
-    )
-    n_par = N_SUFFIX * 2 + (0 if args.mode == "geometry"
-                            else speed_params)
-    mean = seed_off.flatten().copy()
-    sd = np.full(N_SUFFIX * 2, 0.16)
-    if args.mode != "geometry":
-        mean = np.concatenate([mean, seed_sc])
-        sd = np.concatenate([sd, np.full(speed_params, 0.08)])
+    def unpack_leads(theta):
+        leads = seed_lead.copy()
+        if len(lead_local_indices):
+            start = offset_params + speed_params
+            proposed = np.rint(theta[start:start + len(lead_local_indices)])
+            leads[lead_local_indices] = np.clip(
+                proposed, 0, args.lead_max
+            ).astype(np.int64)
+        return leads
 
-    time_w = {"geometry": 8.0, "timing": 20.0, "aggressive": 45.0}[args.mode]
-    cov_w = {"geometry": 250.0, "timing": 200.0, "aggressive": 100.0}[args.mode]
+    offset_params = 0 if args.freeze_offsets else N_SUFFIX * 2
+    if args.freeze_offsets and args.mode == "geometry":
+        ap.error("--freeze-offsets requires timing, aggressive, or speed mode")
+    lead_params = len(lead_local_indices)
+    n_par = (
+        offset_params
+        + (0 if args.mode == "geometry" else speed_params)
+        + lead_params
+    )
+    mean = (
+        np.empty(0, np.float64)
+        if args.freeze_offsets else seed_off.flatten().copy()
+    )
+    sd = np.full(offset_params, 0.16)
+    if args.mode != "geometry":
+        speed_mean = (
+            seed_sc[speed_local_indices]
+            if args.live_teacher_config
+            and args.exact_search_space == "config"
+            else seed_sc
+        )
+        mean = np.concatenate([mean, speed_mean])
+        sd = np.concatenate([sd, np.full(speed_params, 0.08)])
+    if lead_params:
+        mean = np.concatenate([mean, seed_lead[lead_local_indices]])
+        sd = np.concatenate([sd, np.full(lead_params, 2.0)])
+
+    time_w = {
+        "geometry": 8.0,
+        "timing": 20.0,
+        "aggressive": 45.0,
+        "speed": 200.0,
+    }[args.mode]
+    cov_w = {
+        "geometry": 250.0,
+        "timing": 200.0,
+        "aggressive": 100.0,
+        "speed": 30.0,
+    }[args.mode]
 
     demo_states = {
         "pos": np.repeat(start_p[None], 8, 0).astype(np.float32),
@@ -416,6 +548,7 @@ def main() -> int:
 
     def materialize_exact_config(theta, index):
         off, sc = unpack(theta)
+        leads = unpack_leads(theta)
         document = json.loads(json.dumps(exact_config_doc))
         cfg_args = document["args"]
         gates = range(SUFFIX_FIRST, SUFFIX_FIRST + N_SUFFIX)
@@ -431,6 +564,11 @@ def main() -> int:
             cfg_args["reference_velocity_scales"] = format_gate_values(
                 cfg_args.get("reference_velocity_scales", ""),
                 {gate: float(sc[j]) for j, gate in enumerate(gates)},
+            )
+        if lead_params:
+            cfg_args["reference_action_leads"] = format_gate_values(
+                cfg_args.get("reference_action_leads", ""),
+                {gate: int(leads[j]) for j, gate in enumerate(gates)},
             )
         path = exact_tmp / f"config_{index}.json"
         path.write_text(json.dumps(document, indent=2))
@@ -602,7 +740,34 @@ def main() -> int:
             })
         return out
 
+    def candidate_score(metrics, coverage):
+        t_med = metrics["t_med"] if metrics["t_med"] else 60.0
+        if args.mode == "speed":
+            shortfall = max(0.0, args.reliability_floor
+                            - metrics["finish_rate"])
+            if shortfall > 0.0:
+                # Every feasible candidate outranks every infeasible one.
+                return (
+                    -1_000_000.0
+                    - 10_000.0 * shortfall
+                    - time_w * t_med
+                )
+            # Inside the feasible set, time is the objective. Reliability and
+            # co-visibility only break sub-millisecond-equivalent ties.
+            return (
+                1_000_000.0
+                - time_w * t_med
+                + metrics["finish_rate"]
+                + 0.01 * coverage["dual_cov"]
+            )
+        return (
+            1000.0 * metrics["finish_rate"]
+            + cov_w * coverage["dual_cov"]
+            - time_w * t_med
+        )
+
     history = []
+    archive = []
     best = {"score": -1e9}
     t0 = time.time()
     for it in range(args.iters):
@@ -630,10 +795,9 @@ def main() -> int:
         mets = evaluate_pop(refs, thetas)
         results = []
         for th, ref, cov, m in zip(thetas, refs, covs, mets):
-            t_med = m["t_med"] if m["t_med"] else 60.0
-            score = (1000.0 * m["finish_rate"] + cov_w * cov["dual_cov"]
-                     - time_w * t_med)
+            score = candidate_score(m, cov)
             results.append((score, th))
+            archive.append((score, th.copy()))
             if score > best["score"]:
                 best = {"score": score, "theta": th.copy(),
                         "metrics": {**m, **cov},
@@ -649,25 +813,54 @@ def main() -> int:
               f"{json.dumps(best['metrics'])} "
               f"({time.time() - t0:.0f}s)", flush=True)
 
-    # final: rebuild champion, large eval, dump artifacts
-    off, sc = unpack(best["theta"])
-    line_sc = sc if len(sc) == N_SUFFIX + 1 else np.concatenate(
-        [sc, seed_line_sc[-1:]]
-    )
-    ref = build_reference(gp_s, gR_s, off, line_sc, lcfg)
-    cov_ref = (
-        exact_covis_reference(off)
-        if args.live_teacher_config and args.exact_search_space == "config"
-        else ref
-    )
-    cov = covis_metrics(cov_ref, all_corners, all_centers, all_normals,
-                        K, R_cb, wdet)
+    # Final: rerank several unique finalists together on one untouched,
+    # common-random-number pool. This prevents the luckiest candidate from any
+    # one CEM generation becoming champion merely through winner's curse.
+    archive.sort(key=lambda item: -item[0])
+    finalist_thetas = []
+    seen = set()
+    for _score, theta in archive:
+        key = np.round(theta, 10).tobytes()
+        if key in seen:
+            continue
+        seen.add(key)
+        finalist_thetas.append(theta)
+        if len(finalist_thetas) >= max(1, args.finalists):
+            break
+    finalist_refs, finalist_covs = [], []
+    for theta in finalist_thetas:
+        off_i, sc_i = unpack(theta)
+        line_sc_i = (
+            sc_i if len(sc_i) == N_SUFFIX + 1
+            else np.concatenate([sc_i, seed_line_sc[-1:]])
+        )
+        ref_i = build_reference(gp_s, gR_s, off_i, line_sc_i, lcfg)
+        cov_ref_i = (
+            exact_covis_reference(off_i)
+            if args.live_teacher_config and args.exact_search_space == "config"
+            else ref_i
+        )
+        finalist_refs.append(ref_i)
+        finalist_covs.append(covis_metrics(
+            cov_ref_i, all_corners, all_centers, all_normals, K, R_cb, wdet
+        ))
     args.n_envs = args.final_envs
-    final = evaluate_pop([ref], [best["theta"]])[0]
+    finalist_metrics = evaluate_pop(finalist_refs, finalist_thetas)
+    finalist_scores = [
+        candidate_score(metrics, coverage)
+        for metrics, coverage in zip(finalist_metrics, finalist_covs)
+    ]
+    winner_i = int(np.argmax(finalist_scores))
+    best["theta"] = finalist_thetas[winner_i]
+    final = finalist_metrics[winner_i]
+    cov = finalist_covs[winner_i]
+    off, sc = unpack(best["theta"])
+    ref = finalist_refs[winner_i]
     out_prefix = Path(args.out_prefix)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
     np.savez(f"{out_prefix}_best.npz",
              theta=best["theta"], suffix_offsets=off, suffix_scales=sc,
+             suffix_action_leads=unpack_leads(best["theta"]),
              ref_pos=ref["pos"], ref_vel=ref["vel"],
              ref_quat=ref["quat_wxyz"], ref_gate=ref["gate"] + SUFFIX_FIRST)
     report = {
@@ -677,9 +870,23 @@ def main() -> int:
         "coverage": cov,
         "final_worlds": args.final_envs,
         "final": final,
+        "finalists": [
+            {
+                "rank": index + 1,
+                "score": float(score),
+                "metrics": metrics,
+                "suffix_scales": unpack(theta)[1].tolist(),
+                "suffix_action_leads": unpack_leads(theta).tolist(),
+            }
+            for index, (score, metrics, theta) in enumerate(sorted(
+                zip(finalist_scores, finalist_metrics, finalist_thetas),
+                key=lambda item: -item[0],
+            ))
+        ],
         "history": history,
         "suffix_offsets": off.tolist(),
         "suffix_scales": sc.tolist(),
+        "suffix_action_leads": unpack_leads(best["theta"]).tolist(),
     }
     Path(f"{out_prefix}_report.json").write_text(
         json.dumps(report, indent=1))
