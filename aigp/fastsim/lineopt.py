@@ -121,10 +121,11 @@ def build_reference(
     cfg: LineConfig,
 ) -> dict:
     """Parameter vector -> 30 Hz reference rows + diagnostics."""
+    n_g = len(gate_pos)
     off_lim = HOLE_HALF - cfg.clearance
-    off = np.clip(np.asarray(offsets, float).reshape(N_GATES, 2),
+    off = np.clip(np.asarray(offsets, float).reshape(n_g, 2),
                   -off_lim, off_lim)
-    scale = np.clip(np.asarray(seg_scale, float).reshape(N_GATES + 1),
+    scale = np.clip(np.asarray(seg_scale, float).reshape(n_g + 1),
                     0.35, 1.0)
 
     cross = gate_pos + off[:, 0:1] * gate_R[:, :, 0] \
@@ -133,10 +134,14 @@ def build_reference(
 
     # control sequence: spawn, then lead-in / crossing / lead-out per gate
     ctrl = [np.asarray(cfg.spawn, float)]
+    if getattr(cfg, "start_dir", None) is not None:
+        d0 = np.asarray(cfg.start_dir, float)
+        d0 = d0 / (np.linalg.norm(d0) + 1e-9)
+        ctrl.append(ctrl[0] + d0 * 1.5)
     ctrl_gate = [-1]                      # segment id at each ctrl point
-    for i in range(N_GATES):
+    for i in range(n_g):
         prev = ctrl[-1]
-        nxt = cross[i + 1] if i + 1 < N_GATES else None
+        nxt = cross[i + 1] if i + 1 < n_g else None
         lead = cfg.normal_lead_m
         lead_in = min(lead, 0.35 * np.linalg.norm(cross[i] - prev))
         lead_out = lead if nxt is None else min(
@@ -158,9 +163,9 @@ def build_reference(
         np.linalg.norm(np.diff(path, axis=0), axis=1))])
 
     # gate stations along s (nearest sample to each crossing point)
-    station = np.empty(N_GATES)
+    station = np.empty(n_g)
     lo = 0
-    for i in range(N_GATES):
+    for i in range(n_g):
         dist = np.linalg.norm(path[lo:] - cross[i], axis=1)
         k = lo + int(np.argmin(dist))
         station[i] = s[k]
@@ -229,10 +234,10 @@ def build_reference(
     # the gate). Fall back to tangent heading within 1.5 m of the
     # crossing and after the last gate; slew-limited attitude smooths
     # the gate-switch step.
-    look_tgt = cross[np.clip(target_r, 0, N_GATES - 1)]
+    look_tgt = cross[np.clip(target_r, 0, n_g - 1)]
     look_vec = look_tgt - pos_r
     near = np.linalg.norm(look_vec[:, :2], axis=1) < 1.5
-    psi_r = np.where(near | (target_r >= N_GATES),
+    psi_r = np.where(near | (target_r >= n_g),
                      np.arctan2(tan_r[:, 1], tan_r[:, 0]),
                      np.arctan2(look_vec[:, 1], look_vec[:, 0]))
     hspeed = np.linalg.norm(tan_r[:, :2], axis=1)
@@ -355,6 +360,7 @@ class FlatRefController:
         self.cross_row = torch.tensor(
             np.clip(np.round(ref["t_gate"] / DT).astype(int), 0,
                     n_pts - 1), device=dev)
+        self.n_gates = len(ref["cross"])
         self.cur_gate = torch.zeros(n_envs, dtype=torch.long, device=dev)
         speed = torch.linalg.norm(self.V, dim=1)
         past = torch.nonzero(speed > 1.5).squeeze(-1)
@@ -416,15 +422,15 @@ class FlatRefController:
         # advance the gate cursor only on actual passage (plane crossed
         # near the crossing point), then clamp the row index to the
         # active gate's segment so the fold can't be skipped
-        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
+        g = torch.clamp(self.cur_gate, max=self.n_gates - 1)
         rel = p - self.cross_pt[g]
         along = (rel * self.cross_n[g]).sum(-1)
         near_g = torch.linalg.norm(rel, dim=-1) < 2.2
-        passed = (along > 0.15) & near_g & (self.cur_gate < N_GATES)
+        passed = (along > 0.15) & near_g & (self.cur_gate < self.n_gates)
         self.cur_gate = torch.where(passed, self.cur_gate + 1,
                                     self.cur_gate)
-        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
-        cap = torch.where(self.cur_gate >= N_GATES,
+        g = torch.clamp(self.cur_gate, max=self.n_gates - 1)
+        cap = torch.where(self.cur_gate >= self.n_gates,
                           torch.full_like(nearest, self.n_pts - 1),
                           self.cross_row[g] + 2)
         nearest = torch.minimum(nearest, cap)
@@ -545,6 +551,7 @@ class BatchedFlatRefController:
         self.cross_row = torch.tensor(np.stack([
             np.clip(np.round(r["t_gate"] / DT).astype(int), 0,
                     len(r["pos"]) - 1) for r in refs]), device=dev)
+        self.n_gates = len(refs[0]["cross"])
         self.cur_gate = torch.zeros(n_envs, dtype=torch.long, device=dev)
         launch = []
         for r in refs:
@@ -590,15 +597,15 @@ class BatchedFlatRefController:
         best = torch.linalg.norm(dif, dim=-1).argmin(dim=1)
         nearest = cand_rows[torch.arange(n, device=self.dev), best]
         # gate-segment cursor clamp (see FlatRefController)
-        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
+        g = torch.clamp(self.cur_gate, max=self.n_gates - 1)
         rel = p - self.cross_pt[c, g]
         along = (rel * self.cross_n[c, g]).sum(-1)
         near_g = torch.linalg.norm(rel, dim=-1) < 2.2
-        passed = (along > 0.15) & near_g & (self.cur_gate < N_GATES)
+        passed = (along > 0.15) & near_g & (self.cur_gate < self.n_gates)
         self.cur_gate = torch.where(passed, self.cur_gate + 1,
                                     self.cur_gate)
-        g = torch.clamp(self.cur_gate, max=N_GATES - 1)
-        cap = torch.where(self.cur_gate >= N_GATES, last,
+        g = torch.clamp(self.cur_gate, max=self.n_gates - 1)
+        cap = torch.where(self.cur_gate >= self.n_gates, last,
                           torch.minimum(self.cross_row[c, g] + 2, last))
         nearest = torch.minimum(nearest, cap)
         self.steps = self.steps + 1
